@@ -96,19 +96,41 @@ export function isEmailEnabled(): boolean {
 
 export function getAuthSecret(): string {
   const env = getEnv();
-  if (env.AUTH_SECRET) {
-    return env.AUTH_SECRET;
+  const secret = env.AUTH_SECRET ?? readAuthSecretFromProcessEnv();
+
+  if (secret) {
+    return secret;
   }
 
   if (env.NODE_ENV === "development") {
     return "local-development-auth-secret-min-32-characters";
   }
 
-  throw new Error("AUTH_SECRET is required in production");
+  // Lets `next build` finish when hosting env vars are runtime-only.
+  if (process.env.NEXT_PHASE === "phase-production-build") {
+    return "build-time-auth-secret-minimum-32-characters";
+  }
+
+  throw new Error(
+    "AUTH_SECRET is required in production. Add AUTH_SECRET (or NEXTAUTH_SECRET) " +
+      "as a hosting environment variable with at least 32 random characters.",
+  );
+}
+
+function readAuthSecretFromProcessEnv() {
+  const secret = process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET;
+  if (typeof secret !== "string") {
+    return undefined;
+  }
+
+  const trimmed = secret.trim();
+  return trimmed.length >= 32 ? trimmed : undefined;
 }
 
 export function isAdminAuthConfigured(): boolean {
   const env = getEnv();
-  const hasSecret = Boolean(env.AUTH_SECRET) || env.NODE_ENV === "development";
+  const hasSecret =
+    Boolean(env.AUTH_SECRET || readAuthSecretFromProcessEnv()) ||
+    env.NODE_ENV === "development";
   return Boolean(env.ADMIN_EMAIL && env.ADMIN_PASSWORD_HASH && hasSecret);
 }
