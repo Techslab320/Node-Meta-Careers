@@ -9,7 +9,7 @@ describe("published job filtering", () => {
 });
 
 describe("admin route protection", () => {
-  it("expects admin routes to use dedicated middleware matchers", () => {
+  it("expects admin routes to use dedicated proxy matchers", () => {
     const matchers = [adminBasePath, `${adminBasePath}/:path*`];
     expect(matchers).toContain(adminBasePath);
     expect(matchers).toContain(`${adminBasePath}/:path*`);

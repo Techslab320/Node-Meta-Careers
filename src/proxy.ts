@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 import { adminBasePath, adminLoginPath, isAdminPagePath } from "@/config/admin";
 import { auth } from "@/lib/auth/auth";
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   if (isAdminPagePath(pathname) && pathname !== adminLoginPath) {
