@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { uploadResume } from "@/lib/uploads/resume";
 import { getClientKey, rateLimit } from "@/lib/security/rate-limit";
 
+export const runtime = "nodejs";
+
 export async function POST(request: Request) {
   try {
     const limit = rateLimit(getClientKey(request, "upload-resume"), 10, 60 * 60 * 1000);

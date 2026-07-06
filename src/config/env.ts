@@ -98,12 +98,8 @@ const envSchema = z.object({
 
 export type Env = z.infer<typeof envSchema>;
 
-let cachedEnv: Env | null = null;
-
 export function getEnv(): Env {
-  if (cachedEnv) return cachedEnv;
-  cachedEnv = envSchema.parse(process.env);
-  return cachedEnv;
+  return envSchema.parse(process.env);
 }
 
 export function requireEnv<K extends keyof Env>(

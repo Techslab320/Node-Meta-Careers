@@ -14,6 +14,8 @@ import { verifyTurnstileToken } from "@/lib/security/turnstile";
 import { isTurnstileEnabled } from "@/config/env";
 import { isTechnicalRole } from "@/lib/jobs/utils";
 
+export const runtime = "nodejs";
+
 export async function POST(request: Request) {
   try {
     const limit = rateLimit(getClientKey(request, "submit-application"), 5, 60 * 60 * 1000);

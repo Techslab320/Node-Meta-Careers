@@ -3,7 +3,15 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth/auth";
 import { connectDB } from "@/lib/database/mongodb";
 import { ApplicationModel } from "@/models/Application";
-import { getLocalResumePath, isLocalResumeUrl } from "@/lib/uploads/resume";
+import { ResumeFileModel } from "@/models/ResumeFile";
+import {
+  getLocalResumePath,
+  getMongoResumeId,
+  isLocalResumeUrl,
+  isMongoResumeUrl,
+} from "@/lib/uploads/resume";
+
+export const runtime = "nodejs";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -20,6 +28,23 @@ export async function GET(_request: Request, { params }: RouteParams) {
   const application = await ApplicationModel.findById(id).select("resumeUrl resumeFilename");
   if (!application) {
     return NextResponse.json({ error: "Application not found" }, { status: 404 });
+  }
+
+  if (isMongoResumeUrl(application.resumeUrl)) {
+    const resumeFile = await ResumeFileModel.findById(
+      getMongoResumeId(application.resumeUrl),
+    ).select("data contentType filename");
+
+    if (!resumeFile?.data) {
+      return NextResponse.json({ error: "Unable to download resume" }, { status: 502 });
+    }
+
+    return new NextResponse(new Uint8Array(resumeFile.data), {
+      headers: {
+        "Content-Type": resumeFile.contentType || "application/octet-stream",
+        "Content-Disposition": `attachment; filename="${application.resumeFilename || resumeFile.filename}"`,
+      },
+    });
   }
 
   if (isLocalResumeUrl(application.resumeUrl)) {

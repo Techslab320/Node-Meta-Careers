@@ -108,6 +108,7 @@ export const applicationSchema = applicationFormSchema.extend({
     .refine(
       (value) =>
         value.startsWith("local-resume://") ||
+        value.startsWith("mongo-resume://") ||
         /^https?:\/\//.test(value),
       "Invalid resume URL",
     ),

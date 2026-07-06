@@ -1,8 +1,5 @@
-import { mkdir, writeFile } from "fs/promises";
 import path from "path";
 import { randomUUID } from "crypto";
-import { put } from "@vercel/blob";
-import { getEnv } from "@/config/env";
 import {
   ALLOWED_RESUME_EXTENSIONS,
   MAX_RESUME_SIZE,
@@ -10,8 +7,7 @@ import {
 } from "@/lib/validation/application";
 
 export const LOCAL_RESUME_PREFIX = "local-resume://";
-
-const LOCAL_RESUME_DIR = path.join(process.cwd(), ".data", "resumes");
+export const MONGO_RESUME_PREFIX = "mongo-resume://";
 
 function getExtension(filename: string): string {
   return filename.slice(filename.lastIndexOf(".")).toLowerCase();
@@ -21,7 +17,16 @@ function sanitizeFilename(filename: string): string {
   return filename.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
+function hasMongoUri(): boolean {
+  return Boolean(process.env.MONGODB_URI?.trim());
+}
+
+function hasBlobToken(): boolean {
+  return Boolean(process.env.BLOB_READ_WRITE_TOKEN?.trim());
+}
+
 async function uploadResumeToBlob(file: File, token: string) {
+  const { put } = await import("@vercel/blob");
   const safeName = sanitizeFilename(file.name);
   const pathname = `resumes/${randomUUID()}-${safeName}`;
 
@@ -37,12 +42,35 @@ async function uploadResumeToBlob(file: File, token: string) {
   };
 }
 
+async function uploadResumeToMongo(file: File) {
+  const { connectDB } = await import("@/lib/database/mongodb");
+  const { ResumeFileModel } = await import("@/models/ResumeFile");
+  const safeName = sanitizeFilename(file.name);
+  const buffer = Buffer.from(await file.arrayBuffer());
+
+  await connectDB();
+  const resumeFile = await ResumeFileModel.create({
+    filename: safeName,
+    contentType: file.type || "application/octet-stream",
+    data: buffer,
+  });
+
+  return {
+    url: `${MONGO_RESUME_PREFIX}${resumeFile._id.toString()}`,
+    filename: safeName,
+  };
+}
+
 async function uploadResumeLocally(file: File) {
-  await mkdir(LOCAL_RESUME_DIR, { recursive: true });
+  const { mkdir, writeFile } = await import("fs/promises");
+  const path = await import("path");
+  const localResumeDir = path.join(process.cwd(), ".data", "resumes");
   const safeName = sanitizeFilename(file.name);
   const storedName = `${randomUUID()}-${safeName}`;
   const buffer = Buffer.from(await file.arrayBuffer());
-  await writeFile(path.join(LOCAL_RESUME_DIR, storedName), buffer);
+
+  await mkdir(localResumeDir, { recursive: true });
+  await writeFile(path.join(localResumeDir, storedName), buffer);
 
   return {
     url: `${LOCAL_RESUME_PREFIX}${storedName}`,
@@ -54,10 +82,18 @@ export function isLocalResumeUrl(url: string): boolean {
   return url.startsWith(LOCAL_RESUME_PREFIX);
 }
 
+export function isMongoResumeUrl(url: string): boolean {
+  return url.startsWith(MONGO_RESUME_PREFIX);
+}
+
 export function getLocalResumePath(url: string): string {
   const storedName = url.slice(LOCAL_RESUME_PREFIX.length);
   const safeStoredName = path.basename(storedName);
-  return path.join(LOCAL_RESUME_DIR, safeStoredName);
+  return path.join(process.cwd(), ".data", "resumes", safeStoredName);
+}
+
+export function getMongoResumeId(url: string): string {
+  return url.slice(MONGO_RESUME_PREFIX.length);
 }
 
 export async function uploadResume(file: File): Promise<{
@@ -82,16 +118,19 @@ export async function uploadResume(file: File): Promise<{
     throw new Error("Resume exceeds maximum size of 10 MB");
   }
 
-  const env = getEnv();
-  if (env.BLOB_READ_WRITE_TOKEN) {
-    return uploadResumeToBlob(file, env.BLOB_READ_WRITE_TOKEN);
+  if (hasBlobToken()) {
+    return uploadResumeToBlob(file, process.env.BLOB_READ_WRITE_TOKEN!.trim());
   }
 
-  if (env.NODE_ENV === "development") {
+  if (hasMongoUri()) {
+    return uploadResumeToMongo(file);
+  }
+
+  if (process.env.NODE_ENV === "development") {
     return uploadResumeLocally(file);
   }
 
   throw new Error(
-    "Resume uploads are not configured. Set BLOB_READ_WRITE_TOKEN or run in development mode.",
+    "Resume uploads are not configured. Set BLOB_READ_WRITE_TOKEN or MONGODB_URI.",
   );
 }
