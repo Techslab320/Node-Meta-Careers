@@ -1,23 +1,29 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { signIn } from "next-auth/react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { adminBasePath } from "@/config/admin";
 import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Alert, Card } from "@/components/ui/card";
 import { Logo } from "@/components/layout/logo";
+import { adminLoginAction } from "@/lib/auth/admin-login-action";
 
 export function AdminLoginForm() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [configWarning, setConfigWarning] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const authError = searchParams.get("error");
+    if (authError) {
+      setError("Invalid email or password.");
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     async function checkAuthConfig() {
@@ -27,7 +33,7 @@ export function AdminLoginForm() {
         const data = (await response.json()) as { configured?: boolean };
         if (!data.configured) {
           setConfigWarning(
-            "Admin login is not configured on the server. Set ADMIN_EMAIL, AUTH_SECRET, and ADMIN_PASSWORD (or ADMIN_PASSWORD_HASH) in Vercel environment variables, then redeploy.",
+            "Admin login is not configured on the server. In Vercel, set ADMIN_EMAIL, AUTH_SECRET, and ADMIN_PASSWORD, then redeploy.",
           );
         }
       } catch {
@@ -44,25 +50,15 @@ export function AdminLoginForm() {
     setError(null);
 
     try {
-      const result = await signIn("credentials", {
+      const result = await adminLoginAction(
         email,
         password,
-        redirect: false,
-        callbackUrl: adminBasePath,
-      });
+        searchParams.get("callbackUrl") || adminBasePath,
+      );
 
       if (result?.error) {
-        setError("Invalid email or password.");
-        return;
+        setError(result.error);
       }
-
-      if (!result?.ok) {
-        setError("Unable to sign in. Please try again.");
-        return;
-      }
-
-      router.push(searchParams.get("callbackUrl") || adminBasePath);
-      router.refresh();
     } catch (loginError) {
       console.error("Admin sign-in failed", loginError);
       setError("Unable to sign in. Please try again.");

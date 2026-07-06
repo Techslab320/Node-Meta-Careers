@@ -56,14 +56,14 @@ export async function verifyAdminPassword(
   password: string,
   bcryptCompare: (password: string, hash: string) => Promise<boolean>,
 ): Promise<boolean> {
+  const plainPassword = getAdminPlainPassword();
+  if (plainPassword && safeEqualString(plainPassword, password)) {
+    return true;
+  }
+
   const hash = getAdminPasswordHash();
   if (hash) {
     return bcryptCompare(password, hash);
-  }
-
-  const plainPassword = getAdminPlainPassword();
-  if (plainPassword) {
-    return safeEqualString(plainPassword, password);
   }
 
   return false;
