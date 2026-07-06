@@ -156,7 +156,7 @@ function AdminHrInterviewerComposer({
           name={interviewer.fullName || "HR interviewer"}
           avatarUrl={interviewer.avatarUrl}
           variant="hr"
-          size="sm"
+          size="md"
         />
         <div className="min-w-0 flex-1">
           {joined ? (
@@ -164,15 +164,7 @@ function AdminHrInterviewerComposer({
               <p className="truncate text-sm font-medium text-white">
                 {interviewer.fullName.trim() || "Unnamed interviewer"}
               </p>
-              <div className="mt-1 flex items-center justify-between gap-2">
-                <p className="truncate text-xs text-slate-400">{interviewer.role}</p>
-                <HrBotSwitch
-                  enabled={hrBotEnabled}
-                  loading={togglingHrBot}
-                  disabled={joining || loggingOut}
-                  onToggle={onToggleHrBot}
-                />
-              </div>
+              <p className="mt-0.5 truncate text-xs text-slate-400">{interviewer.role}</p>
             </>
           ) : (
             <div className="space-y-2">
@@ -208,47 +200,52 @@ function AdminHrInterviewerComposer({
                   <p className="mt-1 text-xs text-slate-500">Uploading...</p>
                 ) : null}
               </div>
-              <div className="flex items-center justify-between gap-2 pt-1">
-                <p className="text-xs text-slate-500">#{index + 1}</p>
-                <HrBotSwitch
-                  enabled={hrBotEnabled}
-                  loading={togglingHrBot}
-                  disabled={joining || loggingOut}
-                  onToggle={onToggleHrBot}
-                />
-              </div>
             </div>
           )}
-          <div className="mt-2 flex justify-end">
-            {!joined ? (
-              <Button
-                type="button"
-                size="sm"
-                disabled={joining || loggingOut || togglingHrBot || !interviewer.fullName.trim()}
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  onJoin();
-                }}
-              >
-                {joining ? "Joining..." : "Join"}
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                disabled={loggingOut || joining || togglingHrBot}
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  onLogout();
-                }}
-              >
-                {loggingOut ? "Leaving..." : "Logout"}
-              </Button>
-            )}
-          </div>
+        </div>
+      </div>
+
+      <div
+        className={`mt-3 flex flex-wrap items-center gap-2 border-t border-slate-800/60 pt-3 ${
+          joined ? "justify-end" : "justify-between"
+        }`}
+      >
+        {!joined ? <p className="text-xs text-slate-500">#{index + 1}</p> : null}
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <HrBotSwitch
+            enabled={hrBotEnabled}
+            loading={togglingHrBot}
+            disabled={joining || loggingOut}
+            onToggle={onToggleHrBot}
+          />
+          {!joined ? (
+            <Button
+              type="button"
+              size="sm"
+              disabled={joining || loggingOut || togglingHrBot || !interviewer.fullName.trim()}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onJoin();
+              }}
+            >
+              {joining ? "Joining..." : "Join"}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              disabled={loggingOut || joining || togglingHrBot}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onLogout();
+              }}
+            >
+              {loggingOut ? "Leaving..." : "Logout"}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -858,7 +855,7 @@ export function AdminChatRoomPanel({
       fullScreen={fullScreen}
       showHrInterviewers={false}
       leftAside={hrSidebar}
-      leftAsideClassName="w-full md:w-80 lg:w-96"
+      leftAsideClassName="min-w-0 w-full md:min-w-[18rem] md:max-w-[24rem]"
       headerActions={headerActions}
     >
       <div

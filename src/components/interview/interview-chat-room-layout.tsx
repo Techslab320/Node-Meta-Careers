@@ -155,7 +155,9 @@ export function InterviewChatRoomLayout({
         className={cn(
           "min-h-0 flex-1 overflow-hidden",
           fullScreen
-            ? "grid grid-cols-1 gap-4 pt-4 md:grid-cols-[minmax(9rem,11rem)_minmax(0,1fr)_minmax(9rem,11rem)] md:grid-rows-1 md:gap-6"
+            ? leftAside
+              ? "grid grid-cols-1 gap-4 pt-4 md:grid-cols-[minmax(18rem,24rem)_minmax(0,1fr)_minmax(9rem,11rem)] md:grid-rows-1 md:gap-6"
+              : "grid grid-cols-1 gap-4 pt-4 md:grid-cols-[minmax(9rem,11rem)_minmax(0,1fr)_minmax(9rem,11rem)] md:grid-rows-1 md:gap-6"
             : "flex flex-col gap-4 xl:flex-row xl:flex-nowrap xl:gap-6",
         )}
       >
@@ -163,7 +165,7 @@ export function InterviewChatRoomLayout({
           className={cn(
             "min-h-0 flex-col",
             leftAside ? "flex" : "hidden md:flex",
-            fullScreen ? hrColumnWidth : "xl:w-56",
+            !leftAside && (fullScreen ? hrColumnWidth : "xl:w-56"),
             leftAsideClassName,
           )}
         >
