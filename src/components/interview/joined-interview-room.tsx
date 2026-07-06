@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { HrInterviewChat } from "@/components/interview/hr-interview-chat";
 import { InterviewChatRoomLayout } from "@/components/interview/interview-chat-room-layout";
 import { InterviewSessionChat } from "@/components/interview/interview-session-chat";
@@ -10,6 +10,7 @@ import { CandidateAvatarUpload } from "@/components/interview/candidate-avatar-u
 import type { ChatRoomSettingsInput } from "@/config/chat-room";
 import type { JoinedHrInterviewerView } from "@/lib/chat-room/interviewer-presence";
 import { candidateSessionRequestInit } from "@/lib/chat-room/candidate-session-storage";
+import { applySessionStatusUpdate } from "@/lib/chat-room/session-status-poll";
 
 interface JoinedInterviewRoomProps {
   settings: ChatRoomSettingsInput;
@@ -40,6 +41,19 @@ export function JoinedInterviewRoom({
   const leadRecruiterJoined = joinedHrInterviewerIndexes.includes(0);
   const leadUsesBot = hrBotEnabledIndexes.includes(0) && leadRecruiterJoined;
   const roomSettings = { ...settings, hrBotEnabled: leadUsesBot };
+  const statusRef = useRef({
+    joinedHrInterviewerIndexes,
+    joinedHrInterviewers,
+    candidateAvatarUrl,
+    hrBotEnabledIndexes,
+  });
+
+  statusRef.current = {
+    joinedHrInterviewerIndexes,
+    joinedHrInterviewers,
+    candidateAvatarUrl,
+    hrBotEnabledIndexes,
+  };
 
   useEffect(() => {
     async function pollStatus() {
@@ -55,19 +69,21 @@ export function JoinedInterviewRoom({
           candidateAvatarUrl?: string;
           hrBotEnabledIndexes?: number[];
         };
-        if (Array.isArray(data.joinedHrInterviewerIndexes)) {
-          setJoinedHrInterviewerIndexes(
-            [...data.joinedHrInterviewerIndexes].sort((a, b) => a - b),
-          );
+
+        const current = statusRef.current;
+        const next = applySessionStatusUpdate(current, data);
+
+        if (next.joinedHrInterviewerIndexes !== current.joinedHrInterviewerIndexes) {
+          setJoinedHrInterviewerIndexes(next.joinedHrInterviewerIndexes);
         }
-        if (Array.isArray(data.joinedHrInterviewers)) {
-          setJoinedHrInterviewers(data.joinedHrInterviewers);
+        if (next.joinedHrInterviewers !== current.joinedHrInterviewers) {
+          setJoinedHrInterviewers(next.joinedHrInterviewers);
         }
-        if (data.candidateAvatarUrl) {
-          setCandidateAvatarUrl(data.candidateAvatarUrl);
+        if (next.candidateAvatarUrl !== current.candidateAvatarUrl) {
+          setCandidateAvatarUrl(next.candidateAvatarUrl);
         }
-        if (Array.isArray(data.hrBotEnabledIndexes)) {
-          setHrBotEnabledIndexes([...data.hrBotEnabledIndexes].sort((a, b) => a - b));
+        if (next.hrBotEnabledIndexes !== current.hrBotEnabledIndexes) {
+          setHrBotEnabledIndexes(next.hrBotEnabledIndexes);
         }
       } catch {
         // Ignore polling errors.

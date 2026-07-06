@@ -9,6 +9,10 @@ import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/card";
 import type { ChatRoomMessageDocument } from "@/config/chat-room-message";
 import { candidateSessionRequestInit } from "@/lib/chat-room/candidate-session-storage";
+import {
+  areChatMessagesEqual,
+  scrollChatContainerToEnd,
+} from "@/lib/chat/scroll-messages";
 import { insertTextAtSelection, restoreInputSelection } from "@/lib/chat/insert-emoji";
 
 interface InterviewSessionChatProps {
@@ -31,12 +35,15 @@ export function InterviewSessionChat({
   const [replyTo, setReplyTo] = useState<ChatRoomMessageDocument | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const previousMessageCountRef = useRef(0);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
+    if (messages.length <= previousMessageCountRef.current) return;
+    scrollChatContainerToEnd(messagesContainerRef.current);
+    previousMessageCountRef.current = messages.length;
+  }, [messages]);
 
   useEffect(() => {
     async function loadMessages() {
@@ -47,7 +54,10 @@ export function InterviewSessionChat({
         );
         if (!response.ok) return;
         const data = (await response.json()) as { messages?: ChatRoomMessageDocument[] };
-        setMessages(data.messages || []);
+        const nextMessages = data.messages || [];
+        setMessages((current) =>
+          areChatMessagesEqual(current, nextMessages) ? current : nextMessages,
+        );
       } catch {
         // Keep polling on transient errors.
       }
@@ -187,12 +197,15 @@ export function InterviewSessionChat({
   return (
     <div
       className={`relative flex min-h-0 flex-1 flex-col rounded-xl border border-slate-800 bg-slate-950/60 p-4 sm:p-6 ${
-        fullScreen ? "min-h-[50vh] lg:min-h-0" : ""
+        fullScreen ? "h-full" : ""
       }`}
     >
       <p className="shrink-0 text-sm text-slate-400">Chat</p>
 
-      <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto rounded-lg border border-slate-800 bg-slate-900/50 p-4">
+      <div
+        ref={messagesContainerRef}
+        className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto rounded-lg border border-slate-800 bg-slate-900/50 p-4"
+      >
         {messages.length === 0 ? (
           <p className="text-sm text-slate-400">Say hello to your interviewer.</p>
         ) : null}
@@ -220,7 +233,6 @@ export function InterviewSessionChat({
           />
         ))}
 
-        <div ref={messagesEndRef} />
       </div>
 
       {error ? (

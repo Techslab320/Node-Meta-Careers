@@ -70,27 +70,19 @@ export function InterviewChatRoomLayout({
   const participantCardProps = largeParticipantAvatars
     ? { layout: "vertical" as const, fillAvatar: true }
     : {};
-  const sidebarWidth = largeParticipantAvatars
-    ? fullScreen
-      ? "w-full md:w-56 lg:w-64 xl:w-72"
-      : "xl:w-80"
-    : fullScreen
-      ? "w-full md:w-52 lg:w-60"
-      : "xl:w-56";
-  const candidateAsideWidth = largeParticipantAvatars
-    ? fullScreen
-      ? "w-full md:w-56 lg:w-64 xl:w-72"
-      : "xl:w-80"
-    : fullScreen
-      ? "w-full md:w-44 lg:w-52"
-      : "xl:w-48";
+  const hrColumnWidth = largeParticipantAvatars
+    ? "md:min-w-[14rem] md:max-w-[18rem]"
+    : "md:min-w-[12rem] md:max-w-[15rem]";
+  const candidateColumnWidth = largeParticipantAvatars
+    ? "md:min-w-[14rem] md:max-w-[18rem]"
+    : "md:min-w-[11rem] md:max-w-[13rem]";
 
   return (
     <div
       className={cn(
         "flex flex-col",
         fullScreen
-          ? "flex h-[100dvh] flex-1 flex-col overflow-hidden px-4 py-4 sm:px-6 sm:py-6"
+          ? "flex h-full min-h-0 flex-1 flex-col overflow-hidden px-4 py-4 sm:px-6 sm:py-6"
           : "space-y-6",
       )}
     >
@@ -111,14 +103,16 @@ export function InterviewChatRoomLayout({
 
       <div
         className={cn(
-          "flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:gap-6",
-          fullScreen ? "pt-4 md:flex-row md:flex-nowrap" : "xl:flex-row xl:flex-nowrap",
+          "min-h-0 flex-1 overflow-hidden",
+          fullScreen
+            ? "grid grid-cols-1 gap-4 pt-4 md:grid-cols-[minmax(12rem,18rem)_minmax(0,1fr)_minmax(11rem,18rem)] md:grid-rows-1 md:gap-6"
+            : "flex flex-col gap-4 xl:flex-row xl:flex-nowrap xl:gap-6",
         )}
       >
         <aside
           className={cn(
-            "flex min-h-0 shrink-0 flex-col",
-            sidebarWidth,
+            "flex min-h-0 flex-col",
+            fullScreen ? hrColumnWidth : "xl:w-56",
             leftAsideClassName,
           )}
         >
@@ -144,16 +138,21 @@ export function InterviewChatRoomLayout({
             <div
               className={cn(
                 "w-full rounded-xl border border-dashed border-slate-800 bg-slate-950/40",
-                largeParticipantAvatars ? "min-h-[280px]" : "min-h-[88px]",
+                largeParticipantAvatars ? "min-h-[12rem] md:min-h-[16rem]" : "min-h-[88px]",
               )}
               aria-label="Waiting for HR interviewers to join"
             />
           )}
         </aside>
 
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</main>
+        <main className="flex min-h-0 min-w-0 flex-col overflow-hidden">{children}</main>
 
-        <aside className={cn("shrink-0 self-start", candidateAsideWidth)}>
+        <aside
+          className={cn(
+            "flex min-h-0 flex-col",
+            fullScreen ? candidateColumnWidth : "xl:w-48",
+          )}
+        >
           <p className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-500">
             Candidate
           </p>
