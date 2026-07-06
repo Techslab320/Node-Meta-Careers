@@ -5,6 +5,8 @@ import { getSessionMessages, addSessionMessage } from "@/lib/chat-room/messages"
 import { getAuthorizedCandidateSession } from "@/lib/chat-room/sessions";
 import { getClientKey, rateLimit } from "@/lib/security/rate-limit";
 
+
+export const runtime = "nodejs";
 interface RouteParams {
   params: Promise<{ sessionId: string }>;
 }

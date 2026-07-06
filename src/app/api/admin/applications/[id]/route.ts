@@ -6,6 +6,8 @@ import { applicationStatusSchema } from "@/lib/validation/application";
 import { sanitizeOptionalText } from "@/lib/security/sanitize";
 import { getApplicationById, deleteApplicationById } from "@/lib/applications/queries";
 
+export const runtime = "nodejs";
+
 interface RouteParams {
   params: Promise<{ id: string }>;
 }

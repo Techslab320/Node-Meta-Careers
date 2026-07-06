@@ -4,6 +4,8 @@ import {
   getPublicChatRoomSettings,
 } from "@/lib/chat-room/settings";
 
+
+export const runtime = "nodejs";
 export async function GET() {
   try {
     const settings = await getChatRoomSettings();

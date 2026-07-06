@@ -5,6 +5,8 @@ import { auth } from "@/lib/auth/auth";
 import { isLocalAvatarUrl } from "@/lib/uploads/avatar-constants";
 import { getLocalAvatarPath } from "@/lib/uploads/avatar";
 
+
+export const runtime = "nodejs";
 interface RouteParams {
   params: Promise<{ filename: string }>;
 }

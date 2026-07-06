@@ -7,6 +7,8 @@ import {
 } from "@/lib/chat-room/settings";
 import { chatRoomSettingsSchema } from "@/lib/validation/chat-room";
 
+
+export const runtime = "nodejs";
 export async function GET() {
   const session = await auth();
   if (!session?.user) {

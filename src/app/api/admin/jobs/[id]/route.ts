@@ -5,6 +5,8 @@ import { JobModel } from "@/models/Job";
 import { serializeJob } from "@/lib/jobs/utils";
 import { jobSchema, jobStatusSchema } from "@/lib/validation/job";
 
+
+export const runtime = "nodejs";
 interface RouteParams {
   params: Promise<{ id: string }>;
 }

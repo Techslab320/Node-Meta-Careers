@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/card";
 import { adminPath } from "@/config/admin";
 import { applicationStatuses } from "@/config/site";
 import { formatLabel } from "@/lib/jobs/utils";
+import { parseJsonResponse } from "@/lib/api/parse-json-response";
 import type { ApplicationDocument } from "@/types";
 
 interface AdminApplicationsTableProps {
@@ -94,7 +95,7 @@ export function AdminApplicationsTable({
       });
 
       if (!response.ok) {
-        const payload = (await response.json()) as { error?: string };
+        const payload = await parseJsonResponse<{ error?: string }>(response);
         throw new Error(payload.error || "Unable to delete application.");
       }
 

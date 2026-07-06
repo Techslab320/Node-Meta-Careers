@@ -4,6 +4,8 @@ import { ChatRoomJoinError } from "@/lib/chat-room/join-errors";
 import { joinChatRoomSession } from "@/lib/chat-room/sessions";
 import { joinChatRoomSessionSchema } from "@/lib/validation/chat-room-session";
 
+
+export const runtime = "nodejs";
 export async function POST(request: Request) {
   try {
     const body = await request.json();

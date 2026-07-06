@@ -4,6 +4,8 @@ import { getChatRoomSettings } from "@/lib/chat-room/settings";
 import { getClientKey, rateLimit } from "@/lib/security/rate-limit";
 import { chatRoomMessageSchema } from "@/lib/validation/chat-room-message";
 
+
+export const runtime = "nodejs";
 export async function POST(request: Request) {
   try {
     const limit = rateLimit(getClientKey(request, "chat-room-message"), 30, 60 * 60 * 1000);

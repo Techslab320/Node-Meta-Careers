@@ -4,6 +4,8 @@ import { buildJoinedHrInterviewerViews } from "@/lib/chat-room/interviewer-prese
 import { markSessionLeft, touchSessionPresenceForCandidate } from "@/lib/chat-room/sessions";
 import { getChatRoomSettings } from "@/lib/chat-room/settings";
 
+
+export const runtime = "nodejs";
 interface RouteParams {
   params: Promise<{ sessionId: string }>;
 }

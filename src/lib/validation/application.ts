@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { employmentTypes, experienceLevels } from "@/config/site";
-import { sanitizeText } from "@/lib/security/sanitize";
+
+function cleanText(value: string): string {
+  return value.trim().replace(/\0/g, "");
+}
 
 function toOptionalString(value: unknown): string {
   if (value === undefined || value === null) return "";
@@ -119,7 +122,7 @@ export type ApplicationInput = z.infer<typeof applicationSchema>;
 
 export function normalizeTelegram(value?: string): string | undefined {
   if (!value) return undefined;
-  const trimmed = sanitizeText(value);
+  const trimmed = cleanText(value);
   if (trimmed.startsWith("http")) {
     const match = trimmed.match(/t\.me\/([A-Za-z0-9_]{5,32})/);
     return match ? `@${match[1]}` : trimmed;

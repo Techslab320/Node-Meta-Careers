@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth/auth";
 import { markSessionInProgress, getChatRoomSessionById } from "@/lib/chat-room/sessions";
 
+
+export const runtime = "nodejs";
 interface RouteParams {
   params: Promise<{ sessionId: string }>;
 }

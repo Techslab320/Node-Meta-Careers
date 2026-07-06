@@ -3,6 +3,8 @@ import path from "path";
 import { NextResponse } from "next/server";
 import { getLocalAvatarPath, isLocalAvatarUrl } from "@/lib/uploads/avatar";
 
+
+export const runtime = "nodejs";
 interface RouteParams {
   params: Promise<{ filename: string }>;
 }

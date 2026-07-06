@@ -5,6 +5,8 @@ import { JobModel } from "@/models/Job";
 import { serializeJob } from "@/lib/jobs/utils";
 import { jobSchema } from "@/lib/validation/job";
 
+
+export const runtime = "nodejs";
 export async function GET() {
   const session = await auth();
   if (!session?.user) {

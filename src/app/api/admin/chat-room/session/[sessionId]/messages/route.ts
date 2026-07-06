@@ -4,6 +4,8 @@ import { auth } from "@/lib/auth/auth";
 import { addSessionMessage, getSessionMessages } from "@/lib/chat-room/messages";
 import { getAdminChatRoomSessionById } from "@/lib/chat-room/sessions";
 
+
+export const runtime = "nodejs";
 interface RouteParams {
   params: Promise<{ sessionId: string }>;
 }

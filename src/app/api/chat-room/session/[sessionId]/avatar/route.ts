@@ -4,6 +4,8 @@ import { getAuthorizedCandidateSession, updateCandidateAvatarUrl } from "@/lib/c
 import { uploadAvatar } from "@/lib/uploads/avatar";
 import { getClientKey, rateLimit } from "@/lib/security/rate-limit";
 
+
+export const runtime = "nodejs";
 interface RouteParams {
   params: Promise<{ sessionId: string }>;
 }

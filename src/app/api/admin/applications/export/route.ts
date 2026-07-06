@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth/auth";
 import { getApplications } from "@/lib/applications/queries";
 
+
+export const runtime = "nodejs";
 function escapeCsv(value: string): string {
   if (/[",\n]/.test(value)) {
     return `"${value.replace(/"/g, '""')}"`;

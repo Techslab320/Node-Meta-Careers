@@ -3,6 +3,8 @@ import { auth } from "@/lib/auth/auth";
 import { getApplications } from "@/lib/applications/queries";
 import type { AdminApplicationFilters } from "@/types";
 
+export const runtime = "nodejs";
+
 export async function GET(request: Request) {
   const session = await auth();
   if (!session?.user) {

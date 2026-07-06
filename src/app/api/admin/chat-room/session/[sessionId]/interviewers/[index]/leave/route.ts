@@ -6,6 +6,8 @@ import {
 } from "@/lib/chat-room/sessions";
 import { getChatRoomSettings } from "@/lib/chat-room/settings";
 
+
+export const runtime = "nodejs";
 interface RouteParams {
   params: Promise<{ sessionId: string; index: string }>;
 }

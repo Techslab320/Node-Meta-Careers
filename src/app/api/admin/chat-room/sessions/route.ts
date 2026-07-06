@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth/auth";
 import { getWaitingChatRoomSessions } from "@/lib/chat-room/sessions";
 
+
+export const runtime = "nodejs";
 export async function GET() {
   const session = await auth();
   if (!session?.user) {
