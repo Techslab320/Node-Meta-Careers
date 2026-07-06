@@ -8,15 +8,15 @@ import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Alert, Card } from "@/components/ui/card";
 import { Logo } from "@/components/layout/logo";
-import { adminLoginAction } from "@/lib/auth/admin-login-action";
 
 export function AdminLoginForm() {
   const searchParams = useSearchParams();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [csrfToken, setCsrfToken] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [configWarning, setConfigWarning] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const callbackUrl = searchParams.get("callbackUrl") || adminBasePath;
 
   useEffect(() => {
     const authError = searchParams.get("error");
@@ -24,6 +24,23 @@ export function AdminLoginForm() {
       setError("Invalid email or password.");
     }
   }, [searchParams]);
+
+  useEffect(() => {
+    async function loadCsrfToken() {
+      try {
+        const response = await fetch("/api/auth/csrf", { cache: "no-store" });
+        if (!response.ok) return;
+        const data = (await response.json()) as { csrfToken?: string };
+        if (data.csrfToken) {
+          setCsrfToken(data.csrfToken);
+        }
+      } catch {
+        setError("Unable to start sign-in. Please refresh and try again.");
+      }
+    }
+
+    void loadCsrfToken();
+  }, []);
 
   useEffect(() => {
     async function checkAuthConfig() {
@@ -44,29 +61,6 @@ export function AdminLoginForm() {
     void checkAuthConfig();
   }, []);
 
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault();
-    setLoading(true);
-    setError(null);
-
-    try {
-      const result = await adminLoginAction(
-        email,
-        password,
-        searchParams.get("callbackUrl") || adminBasePath,
-      );
-
-      if (result?.error) {
-        setError(result.error);
-      }
-    } catch (loginError) {
-      console.error("Admin sign-in failed", loginError);
-      setError("Unable to sign in. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
   return (
     <div className="mx-auto flex min-h-screen max-w-md items-center px-4 py-16">
       <Card className="w-full">
@@ -75,28 +69,31 @@ export function AdminLoginForm() {
         <p className="mt-2 text-center text-sm text-slate-400">
           Sign in to manage jobs and applications.
         </p>
-        <form onSubmit={handleSubmit} className="mt-8 space-y-4">
+        <form
+          action="/api/auth/callback/credentials"
+          method="POST"
+          className="mt-8 space-y-4"
+          onSubmit={() => setLoading(true)}
+        >
+          <input type="hidden" name="csrfToken" value={csrfToken} />
+          <input type="hidden" name="callbackUrl" value={callbackUrl} />
           {configWarning ? <Alert variant="warning">{configWarning}</Alert> : null}
           <Input
             label="Email"
             name="email"
             type="email"
             autoComplete="username"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
             required
           />
           <PasswordInput
             label="Password"
             name="password"
             autoComplete="current-password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
             required
           />
           {error ? <p className="text-sm text-red-400">{error}</p> : null}
-          <Button type="submit" disabled={loading} className="w-full">
-            {loading ? "Signing in..." : "Sign in"}
+          <Button type="submit" disabled={loading || !csrfToken} className="w-full">
+            {loading ? "Signing in..." : csrfToken ? "Sign in" : "Loading..."}
           </Button>
         </form>
       </Card>

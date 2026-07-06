@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
+import { adminLoginPath } from "@/config/admin";
 import { getAuthSecret, getEnv, getPublicSiteUrl } from "@/config/env";
 import {
   isAdminAuthConfigured,
@@ -15,6 +16,9 @@ if (!process.env.AUTH_URL) {
 export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost: true,
   secret: getAuthSecret(),
+  pages: {
+    signIn: adminLoginPath,
+  },
   session: { strategy: "jwt", maxAge: 60 * 60 * 8 },
   providers: [
     Credentials({
