@@ -43,8 +43,8 @@ export function InterviewRoomHeaderActions({
   }
 
   return (
-    <div className="flex shrink-0 flex-wrap items-center gap-2">
-      <Button type="button" variant="secondary" size="sm" onClick={handleCopyLink}>
+    <div className="flex w-full shrink-0 flex-wrap items-center gap-2 sm:w-auto">
+      <Button type="button" variant="secondary" size="sm" className="text-xs sm:text-sm" onClick={handleCopyLink}>
         <Copy className="h-4 w-4" aria-hidden />
         {copied ? "Copied" : "Copy link"}
       </Button>
@@ -52,6 +52,7 @@ export function InterviewRoomHeaderActions({
         type="button"
         variant="danger"
         size="sm"
+        className="text-xs sm:text-sm"
         onClick={handleLeaveRoom}
         disabled={leaving}
       >

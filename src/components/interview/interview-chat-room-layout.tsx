@@ -1,9 +1,15 @@
+"use client";
+
+import { useMemo, useState } from "react";
 import { MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ChatRoomSettingsInput } from "@/config/chat-room";
 import { getDefaultInterviewerRole } from "@/config/chat-room";
 import type { JoinedHrInterviewerView } from "@/lib/chat-room/interviewer-presence";
 import { ParticipantCard } from "@/components/interview/participant-avatar";
+import type { InterviewParticipantPreview } from "@/components/interview/interview-participants-bar";
+import { InterviewMobileParticipantsRow } from "@/components/interview/interview-mobile-participants-row";
+import { ParticipantAvatarPreviewModal } from "@/components/interview/participant-avatar-preview-modal";
 
 interface InterviewChatRoomLayoutProps {
   settings: ChatRoomSettingsInput;
@@ -23,7 +29,6 @@ interface InterviewChatRoomLayoutProps {
   children: React.ReactNode;
 }
 
-
 export function InterviewChatRoomLayout({
   settings,
   roomName,
@@ -41,6 +46,9 @@ export function InterviewChatRoomLayout({
   candidateAsideFooter,
   children,
 }: InterviewChatRoomLayoutProps) {
+  const [previewParticipant, setPreviewParticipant] =
+    useState<InterviewParticipantPreview | null>(null);
+
   const configuredInterviewers = settings.hrInterviewers.slice(
     0,
     settings.hrInterviewerCount,
@@ -67,15 +75,44 @@ export function InterviewChatRoomLayout({
         : configuredInterviewers
             .map((interviewer, index) => ({ index, interviewer: resolveInterviewer(index) }))
             .filter(({ interviewer }) => interviewer.fullName.trim());
-  const participantCardProps = largeParticipantAvatars
-    ? { layout: "vertical" as const, fillAvatar: true }
+
+  const compactSidebar = largeParticipantAvatars;
+  const participantCardProps = compactSidebar
+    ? { layout: "vertical" as const, avatarSize: "lg" as const, showCaption: false }
     : {};
-  const hrColumnWidth = largeParticipantAvatars
-    ? "md:min-w-[14rem] md:max-w-[18rem]"
+  const hrColumnWidth = compactSidebar
+    ? "md:min-w-[9rem] md:max-w-[11rem]"
     : "md:min-w-[12rem] md:max-w-[15rem]";
-  const candidateColumnWidth = largeParticipantAvatars
-    ? "md:min-w-[14rem] md:max-w-[18rem]"
+  const candidateColumnWidth = compactSidebar
+    ? "md:min-w-[9rem] md:max-w-[11rem]"
     : "md:min-w-[11rem] md:max-w-[13rem]";
+
+  const mobileParticipantBar = fullScreen && !leftAside;
+  const candidateParticipant = useMemo<InterviewParticipantPreview>(
+    () => ({
+      id: "candidate",
+      name: participantName,
+      role: "Candidate",
+      avatarUrl: candidateAvatarUrl,
+      variant: "candidate",
+    }),
+    [candidateAvatarUrl, participantName],
+  );
+  const mobileHrParticipants = useMemo<InterviewParticipantPreview[]>(
+    () =>
+      visibleEntries.map(({ index, interviewer }) => ({
+        id: `hr-${index}`,
+        name: interviewer.fullName,
+        role: interviewer.role,
+        avatarUrl: interviewer.avatarUrl,
+        variant: "hr" as const,
+      })),
+    [visibleEntries],
+  );
+
+  function openPreview(participant: InterviewParticipantPreview) {
+    setPreviewParticipant(participant);
+  }
 
   return (
     <div
@@ -86,32 +123,46 @@ export function InterviewChatRoomLayout({
           : "space-y-6",
       )}
     >
-      <div className="relative z-20 flex shrink-0 items-center justify-between gap-4 border-b border-slate-800 pb-4">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-cyan-500/15 text-cyan-300">
-            <MessageSquare className="h-5 w-5" aria-hidden />
+      <div className="relative z-20 flex shrink-0 flex-col gap-3 border-b border-slate-800 pb-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:pb-4">
+        <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-cyan-500/15 text-cyan-300 sm:h-11 sm:w-11">
+            <MessageSquare className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden />
           </div>
           <div className="min-w-0">
-            <h1 className="text-2xl font-bold text-white">{roomName}</h1>
-            <p className="truncate text-sm text-slate-400">
+            <h1 className="truncate text-lg font-bold text-white sm:text-2xl">{roomName}</h1>
+            <p className="truncate text-xs text-slate-400 sm:text-sm">
               {jobTitle} · {participantName}
             </p>
           </div>
         </div>
-        {headerActions}
+        {headerActions ? (
+          <div className="flex shrink-0 flex-wrap items-center gap-2">{headerActions}</div>
+        ) : null}
       </div>
+
+      {mobileParticipantBar ? (
+        <div className="shrink-0 space-y-3 border-b border-slate-800/80 py-3 md:hidden">
+          <InterviewMobileParticipantsRow
+            hrParticipants={mobileHrParticipants}
+            candidate={candidateParticipant}
+            onSelect={openPreview}
+          />
+          {candidateAsideFooter}
+        </div>
+      ) : null}
 
       <div
         className={cn(
           "min-h-0 flex-1 overflow-hidden",
           fullScreen
-            ? "grid grid-cols-1 gap-4 pt-4 md:grid-cols-[minmax(12rem,18rem)_minmax(0,1fr)_minmax(11rem,18rem)] md:grid-rows-1 md:gap-6"
+            ? "grid grid-cols-1 gap-4 pt-4 md:grid-cols-[minmax(9rem,11rem)_minmax(0,1fr)_minmax(9rem,11rem)] md:grid-rows-1 md:gap-6"
             : "flex flex-col gap-4 xl:flex-row xl:flex-nowrap xl:gap-6",
         )}
       >
         <aside
           className={cn(
-            "flex min-h-0 flex-col",
+            "min-h-0 flex-col",
+            leftAside ? "flex" : "hidden md:flex",
             fullScreen ? hrColumnWidth : "xl:w-56",
             leftAsideClassName,
           )}
@@ -123,22 +174,33 @@ export function InterviewChatRoomLayout({
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">{leftAside}</div>
           ) : visibleEntries.length > 0 ? (
             <div className="space-y-2">
-              {visibleEntries.map(({ index, interviewer }) => (
-                <ParticipantCard
-                  key={`hr-${index}-${interviewer.fullName}`}
-                  name={interviewer.fullName}
-                  role={interviewer.role}
-                  avatarUrl={interviewer.avatarUrl}
-                  variant="hr"
-                  {...participantCardProps}
-                />
-              ))}
+              {visibleEntries.map(({ index, interviewer }) => {
+                const preview: InterviewParticipantPreview = {
+                  id: `hr-${index}`,
+                  name: interviewer.fullName,
+                  role: interviewer.role,
+                  avatarUrl: interviewer.avatarUrl,
+                  variant: "hr",
+                };
+
+                return (
+                  <ParticipantCard
+                    key={`hr-${index}-${interviewer.fullName}`}
+                    name={interviewer.fullName}
+                    role={interviewer.role}
+                    avatarUrl={interviewer.avatarUrl}
+                    variant="hr"
+                    onClick={mobileParticipantBar ? () => openPreview(preview) : undefined}
+                    {...participantCardProps}
+                  />
+                );
+              })}
             </div>
           ) : (
             <div
               className={cn(
                 "w-full rounded-xl border border-dashed border-slate-800 bg-slate-950/40",
-                largeParticipantAvatars ? "min-h-[12rem] md:min-h-[16rem]" : "min-h-[88px]",
+                compactSidebar ? "min-h-[5.5rem]" : "min-h-[88px]",
               )}
               aria-label="Waiting for HR interviewers to join"
             />
@@ -149,7 +211,7 @@ export function InterviewChatRoomLayout({
 
         <aside
           className={cn(
-            "flex min-h-0 flex-col",
+            "hidden min-h-0 flex-col md:flex",
             fullScreen ? candidateColumnWidth : "xl:w-48",
           )}
         >
@@ -161,11 +223,21 @@ export function InterviewChatRoomLayout({
             role="Candidate"
             variant="candidate"
             avatarUrl={candidateAvatarUrl}
+            onClick={
+              mobileParticipantBar ? () => openPreview(candidateParticipant) : undefined
+            }
             {...participantCardProps}
           />
           {candidateAsideFooter}
         </aside>
       </div>
+
+      {mobileParticipantBar ? (
+        <ParticipantAvatarPreviewModal
+          participant={previewParticipant}
+          onClose={() => setPreviewParticipant(null)}
+        />
+      ) : null}
     </div>
   );
 }

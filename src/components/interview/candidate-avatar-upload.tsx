@@ -4,18 +4,24 @@ import { useRef, useState } from "react";
 import { Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { candidateSessionRequestInit } from "@/lib/chat-room/candidate-session-storage";
+import { cn } from "@/lib/utils";
 
 interface CandidateAvatarUploadProps {
   sessionId: string;
   candidateSessionToken: string;
   onUploaded: (avatarUrl: string) => void;
+  compact?: boolean;
+  compactOnMobile?: boolean;
 }
 
 export function CandidateAvatarUpload({
   sessionId,
   candidateSessionToken,
   onUploaded,
+  compact = false,
+  compactOnMobile = false,
 }: CandidateAvatarUploadProps) {
+  const isCompact = compact || compactOnMobile;
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,7 +64,12 @@ export function CandidateAvatarUpload({
   }
 
   return (
-    <div className="mt-3 w-full">
+    <div
+      className={cn(
+        "w-full",
+        compact ? null : compactOnMobile ? "md:mt-3" : "mt-3",
+      )}
+    >
       <input
         ref={inputRef}
         type="file"
@@ -70,11 +81,15 @@ export function CandidateAvatarUpload({
         type="button"
         variant="secondary"
         size="sm"
-        className="w-full"
+        className={cn(
+          "w-full",
+          isCompact && "h-9 text-xs",
+          compactOnMobile && !compact && "md:h-auto md:text-sm",
+        )}
         disabled={uploading}
         onClick={() => inputRef.current?.click()}
       >
-        <Upload className="h-4 w-4" aria-hidden />
+        <Upload className="h-4 w-4 shrink-0" aria-hidden />
         {uploading ? "Uploading..." : "Upload photo"}
       </Button>
       {error ? <p className="mt-2 text-xs text-red-400">{error}</p> : null}

@@ -128,6 +128,8 @@ interface ParticipantCardProps {
   avatarSize?: keyof typeof sizeClasses;
   layout?: "horizontal" | "vertical";
   fillAvatar?: boolean;
+  showCaption?: boolean;
+  onClick?: () => void;
 }
 
 export function ParticipantCard({
@@ -138,21 +140,42 @@ export function ParticipantCard({
   avatarSize = "md",
   layout = "horizontal",
   fillAvatar = false,
+  showCaption = true,
+  onClick,
 }: ParticipantCardProps) {
+  const avatarSizeForLayout = fillAvatar ? "hero" : avatarSize;
+
   if (layout === "vertical") {
-    return (
-      <div className="flex w-full flex-col items-center rounded-xl border border-slate-800/80 bg-slate-900/40 p-4 text-center">
+    const content = (
+      <>
         <ParticipantAvatar
           name={name}
           avatarUrl={avatarUrl}
           variant={variant}
-          size={fillAvatar ? "hero" : avatarSize}
+          size={avatarSizeForLayout}
           fill={fillAvatar}
         />
-        <p className="mt-4 w-full truncate text-base font-medium text-white">{name}</p>
-        <p className="mt-1 w-full truncate text-sm text-slate-400">{role}</p>
-      </div>
+        {showCaption ? (
+          <>
+            <p className="mt-3 w-full truncate text-sm font-medium text-white">{name}</p>
+            <p className="mt-0.5 w-full truncate text-xs text-slate-400">{role}</p>
+          </>
+        ) : null}
+      </>
     );
+
+    const className =
+      "flex w-full flex-col items-center rounded-xl border border-slate-800/80 bg-slate-900/40 p-3 text-center";
+
+    if (onClick) {
+      return (
+        <button type="button" onClick={onClick} className={cn(className, "cursor-pointer")}>
+          {content}
+        </button>
+      );
+    }
+
+    return <div className={className}>{content}</div>;
   }
 
   return (

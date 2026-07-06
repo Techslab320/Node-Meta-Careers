@@ -109,6 +109,7 @@ export function JoinedInterviewRoom({
         candidateAvatarUrl={candidateAvatarUrl}
         candidateAsideFooter={
           <CandidateAvatarUpload
+            compactOnMobile
             sessionId={sessionId}
             candidateSessionToken={candidateSessionToken}
             onUploaded={setCandidateAvatarUrl}
@@ -144,7 +145,6 @@ export function JoinedInterviewRoom({
               candidateSessionToken={candidateSessionToken}
               participantName={participantName}
               fullScreen
-              textChatNotice={roomSettings.textChatOnlyNotice}
             />
           ) : (
             <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-slate-800 bg-slate-950/60 p-4 sm:p-6">
