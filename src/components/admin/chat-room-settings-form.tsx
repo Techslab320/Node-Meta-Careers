@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { UserRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -21,7 +20,7 @@ import {
   hrBotModels,
   type HrBotProvider,
 } from "@/config/hr-bot-models";
-import { getAvatarDisplayUrl } from "@/lib/uploads/avatar-display";
+import { getAvatarDisplayUrl, getInitials } from "@/lib/uploads/avatar-display";
 
 interface ChatRoomSettingsFormProps {
   initialSettings: ChatRoomSettingsInput;
@@ -42,15 +41,17 @@ function InterviewerAvatarPreview({
       // eslint-disable-next-line @next/next/no-img-element
       <img
         src={displayUrl}
-        alt={fullName || "HR interviewer avatar"}
+        alt=""
         className="h-20 w-20 shrink-0 rounded-full border-2 border-slate-600 object-cover"
       />
     );
   }
 
+  const initials = getInitials(fullName);
+
   return (
-    <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full border-2 border-slate-600 bg-slate-800 text-slate-400">
-      <UserRound className="h-10 w-10" aria-hidden />
+    <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full border-2 border-slate-600 bg-slate-800 text-lg font-semibold text-slate-300">
+      {initials}
     </div>
   );
 }

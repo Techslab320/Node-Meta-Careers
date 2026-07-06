@@ -1,7 +1,15 @@
-import { isLocalAvatarUrl, LOCAL_AVATAR_PREFIX } from "@/lib/uploads/avatar-constants";
+import {
+  getMongoAvatarId,
+  isLocalAvatarUrl,
+  isMongoAvatarUrl,
+  LOCAL_AVATAR_PREFIX,
+} from "@/lib/uploads/avatar-constants";
 
 export function getAvatarDisplayUrl(avatarUrl: string): string | null {
   if (!avatarUrl.trim()) return null;
+  if (isMongoAvatarUrl(avatarUrl)) {
+    return `/api/admin/avatars/mongo/${encodeURIComponent(getMongoAvatarId(avatarUrl))}`;
+  }
   if (isLocalAvatarUrl(avatarUrl)) {
     const filename = avatarUrl.slice(LOCAL_AVATAR_PREFIX.length);
     return `/api/admin/avatars/${encodeURIComponent(filename)}`;
@@ -11,6 +19,9 @@ export function getAvatarDisplayUrl(avatarUrl: string): string | null {
 
 export function getPublicAvatarDisplayUrl(avatarUrl: string): string | null {
   if (!avatarUrl.trim()) return null;
+  if (isMongoAvatarUrl(avatarUrl)) {
+    return `/api/chat-room/avatars/mongo/${encodeURIComponent(getMongoAvatarId(avatarUrl))}`;
+  }
   if (isLocalAvatarUrl(avatarUrl)) {
     const filename = avatarUrl.slice(LOCAL_AVATAR_PREFIX.length);
     return `/api/chat-room/avatars/${encodeURIComponent(filename)}`;

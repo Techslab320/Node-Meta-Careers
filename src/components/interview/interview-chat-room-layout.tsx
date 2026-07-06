@@ -72,15 +72,17 @@ export function InterviewChatRoomLayout({
     : {};
   const sidebarWidth = largeParticipantAvatars
     ? fullScreen
-      ? "lg:w-80 xl:w-80"
+      ? "w-full md:w-56 lg:w-64 xl:w-72"
       : "xl:w-80"
     : fullScreen
-      ? "lg:w-60"
+      ? "w-full md:w-52 lg:w-60"
       : "xl:w-56";
   const candidateAsideWidth = largeParticipantAvatars
-    ? sidebarWidth
+    ? fullScreen
+      ? "w-full md:w-56 lg:w-64 xl:w-72"
+      : "xl:w-80"
     : fullScreen
-      ? "lg:w-52"
+      ? "w-full md:w-44 lg:w-52"
       : "xl:w-48";
 
   return (
@@ -109,8 +111,8 @@ export function InterviewChatRoomLayout({
 
       <div
         className={cn(
-          "flex min-h-0 flex-1 flex-col gap-6 overflow-hidden",
-          fullScreen ? "pt-4 lg:flex-row" : "xl:flex-row",
+          "flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:gap-6",
+          fullScreen ? "pt-4 md:flex-row md:flex-nowrap" : "xl:flex-row xl:flex-nowrap",
         )}
       >
         <aside
@@ -151,7 +153,7 @@ export function InterviewChatRoomLayout({
 
         <main className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</main>
 
-        <aside className={cn("shrink-0", candidateAsideWidth)}>
+        <aside className={cn("shrink-0 self-start", candidateAsideWidth)}>
           <p className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-500">
             Candidate
           </p>

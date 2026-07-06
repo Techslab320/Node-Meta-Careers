@@ -1,34 +1,18 @@
 import { readFile } from "fs/promises";
-import path from "path";
 import { NextResponse } from "next/server";
-import { getLocalAvatarPath, isLocalAvatarUrl } from "@/lib/uploads/avatar";
-
+import { isLocalAvatarUrl, LOCAL_AVATAR_PREFIX } from "@/lib/uploads/avatar-constants";
+import { getLocalAvatarPath } from "@/lib/uploads/avatar";
+import { getAvatarContentType } from "@/lib/uploads/avatar-storage";
 
 export const runtime = "nodejs";
+
 interface RouteParams {
   params: Promise<{ filename: string }>;
 }
 
-function getContentType(filename: string): string {
-  const extension = path.extname(filename).toLowerCase();
-  switch (extension) {
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".png":
-      return "image/png";
-    case ".webp":
-      return "image/webp";
-    case ".gif":
-      return "image/gif";
-    default:
-      return "application/octet-stream";
-  }
-}
-
 export async function GET(_request: Request, { params }: RouteParams) {
   const { filename } = await params;
-  const avatarUrl = `local-avatar://${decodeURIComponent(filename)}`;
+  const avatarUrl = `${LOCAL_AVATAR_PREFIX}${decodeURIComponent(filename)}`;
 
   if (!isLocalAvatarUrl(avatarUrl)) {
     return NextResponse.json({ error: "Invalid avatar path" }, { status: 400 });
@@ -36,9 +20,9 @@ export async function GET(_request: Request, { params }: RouteParams) {
 
   try {
     const buffer = await readFile(getLocalAvatarPath(avatarUrl));
-    return new NextResponse(buffer, {
+    return new NextResponse(new Uint8Array(buffer), {
       headers: {
-        "Content-Type": getContentType(filename),
+        "Content-Type": getAvatarContentType(filename),
         "Cache-Control": "public, max-age=3600",
       },
     });

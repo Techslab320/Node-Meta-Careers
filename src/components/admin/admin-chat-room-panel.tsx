@@ -658,7 +658,7 @@ export function AdminChatRoomPanel({
       fullScreen={fullScreen}
       showHrInterviewers={false}
       leftAside={hrSidebar}
-      leftAsideClassName="lg:w-80 xl:w-80"
+      leftAsideClassName="md:w-72 lg:w-80"
       headerActions={headerActions}
     >
       <div
