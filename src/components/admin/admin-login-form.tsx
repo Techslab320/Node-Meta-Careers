@@ -1,13 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { adminBasePath } from "@/config/admin";
 import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
-import { Card } from "@/components/ui/card";
+import { Alert, Card } from "@/components/ui/card";
 import { Logo } from "@/components/layout/logo";
 
 export function AdminLoginForm() {
@@ -16,7 +16,27 @@ export function AdminLoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [configWarning, setConfigWarning] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    async function checkAuthConfig() {
+      try {
+        const response = await fetch("/api/admin/auth/status", { cache: "no-store" });
+        if (!response.ok) return;
+        const data = (await response.json()) as { configured?: boolean };
+        if (!data.configured) {
+          setConfigWarning(
+            "Admin login is not configured on the server. Set ADMIN_EMAIL, AUTH_SECRET, and ADMIN_PASSWORD (or ADMIN_PASSWORD_HASH) in Vercel environment variables, then redeploy.",
+          );
+        }
+      } catch {
+        // Ignore status check errors.
+      }
+    }
+
+    void checkAuthConfig();
+  }, []);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -60,6 +80,7 @@ export function AdminLoginForm() {
           Sign in to manage jobs and applications.
         </p>
         <form onSubmit={handleSubmit} className="mt-8 space-y-4">
+          {configWarning ? <Alert variant="warning">{configWarning}</Alert> : null}
           <Input
             label="Email"
             name="email"

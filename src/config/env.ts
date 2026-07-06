@@ -15,13 +15,15 @@ function normalizeBcryptHash(value: unknown): unknown {
     return normalized;
   }
 
-  if (normalized.length > 0 && !/^\$2[aby]\$/.test(normalized)) {
+  const repaired = normalized.replace(/\\\$/g, "$");
+  if (repaired.length > 0 && !/^\$2[aby]\$/.test(repaired)) {
     console.error(
-      "ADMIN_PASSWORD_HASH looks corrupted. Escape each $ in .env.local as \\$ (example: \\$2b\\$12\\$...).",
+      "ADMIN_PASSWORD_HASH looks invalid. Use a bcrypt hash like $2b$12$... or set ADMIN_PASSWORD instead.",
     );
+    return undefined;
   }
 
-  return normalized;
+  return repaired;
 }
 const optionalEmail = z.preprocess(
   emptyToUndefined,
@@ -154,7 +156,7 @@ export function getAuthSecret(): string {
   );
 }
 
-function readAuthSecretFromProcessEnv() {
+export function readAuthSecretFromProcessEnv() {
   const secret = process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET;
   if (typeof secret !== "string") {
     return undefined;
@@ -172,10 +174,4 @@ export function getPublicSiteUrl(): string {
   return resolveHostedSiteUrl() || "http://localhost:3000";
 }
 
-export function isAdminAuthConfigured(): boolean {
-  const env = getEnv();
-  const hasSecret =
-    Boolean(env.AUTH_SECRET || readAuthSecretFromProcessEnv()) ||
-    env.NODE_ENV === "development";
-  return Boolean(env.ADMIN_EMAIL && env.ADMIN_PASSWORD_HASH && hasSecret);
-}
+export { isAdminAuthConfigured } from "@/lib/auth/admin-credentials";

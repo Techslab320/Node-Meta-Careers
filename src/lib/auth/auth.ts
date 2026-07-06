@@ -1,7 +1,11 @@
 import bcrypt from "bcryptjs";
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
-import { getAuthSecret, getEnv, getPublicSiteUrl, isAdminAuthConfigured } from "@/config/env";
+import { getAuthSecret, getEnv, getPublicSiteUrl } from "@/config/env";
+import {
+  isAdminAuthConfigured,
+  verifyAdminPassword,
+} from "@/lib/auth/admin-credentials";
 import { rateLimit } from "@/lib/security/rate-limit";
 
 if (!process.env.AUTH_URL) {
@@ -43,7 +47,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             return null;
           }
 
-          const valid = await bcrypt.compare(password, env.ADMIN_PASSWORD_HASH!);
+          const valid = await verifyAdminPassword(password, bcrypt.compare);
           if (!valid) {
             return null;
           }
