@@ -27,12 +27,49 @@ const optionalEmail = z.preprocess(
   emptyToUndefined,
   z.string().email().optional(),
 );
-const optionalUrl = z.preprocess(emptyToUndefined, z.string().url().optional());
+function normalizeOptionalUrl(value: unknown): unknown {
+  if (value === "" || value === null || value === undefined) {
+    return resolveHostedSiteUrl();
+  }
+
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return resolveHostedSiteUrl();
+  }
+
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+
+  try {
+    const parsed = new URL(withProtocol);
+    return parsed.origin;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveHostedSiteUrl(): string | undefined {
+  const vercelHost =
+    process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim() ||
+    process.env.VERCEL_URL?.trim();
+
+  if (!vercelHost) {
+    return undefined;
+  }
+
+  const host = vercelHost.replace(/^https?:\/\//i, "").replace(/\/$/, "");
+  return host ? `https://${host}` : undefined;
+}
+
+const optionalUrl = z.preprocess(normalizeOptionalUrl, z.string().url().optional());
 
 const envSchema = z.object({
   NEXT_PUBLIC_SITE_URL: optionalUrl,
   NEXT_PUBLIC_MAIN_WEBSITE_URL: z.preprocess(
-    emptyToUndefined,
+    normalizeOptionalUrl,
     z.string().url().default("https://www.node-meta.com"),
   ),
   MONGODB_URI: optionalString,
@@ -125,6 +162,14 @@ function readAuthSecretFromProcessEnv() {
 
   const trimmed = secret.trim();
   return trimmed.length >= 32 ? trimmed : undefined;
+}
+
+export function getPublicSiteUrl(): string {
+  const normalized = normalizeOptionalUrl(process.env.NEXT_PUBLIC_SITE_URL);
+  if (typeof normalized === "string" && normalized) {
+    return normalized;
+  }
+  return resolveHostedSiteUrl() || "http://localhost:3000";
 }
 
 export function isAdminAuthConfigured(): boolean {

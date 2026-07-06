@@ -1,3 +1,5 @@
+import { getPublicSiteUrl } from "@/config/env";
+
 export const siteConfig = {
   name: "Node Meta Careers",
   description:
@@ -8,7 +10,7 @@ export const siteConfig = {
     "Revolutionizing blockchain technology with innovative node solutions and decentralized network infrastructure.",
   mainWebsiteUrl:
     process.env.NEXT_PUBLIC_MAIN_WEBSITE_URL || "https://www.node-meta.com",
-  siteUrl: process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000",
+  siteUrl: getPublicSiteUrl(),
   recruitmentContactEmail: process.env.RECRUITMENT_CONTACT_EMAIL || "",
 } as const;
 

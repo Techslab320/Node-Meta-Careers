@@ -1,6 +1,6 @@
 import { Resend } from "resend";
 import { adminPath } from "@/config/admin";
-import { getEnv, isEmailEnabled } from "@/config/env";
+import { getEnv, getPublicSiteUrl, isEmailEnabled } from "@/config/env";
 import {
   buildCandidateConfirmationEmail,
   buildRecruiterNotificationEmail,
@@ -37,7 +37,7 @@ export async function sendApplicationEmails(params: {
 
   const env = getEnv();
   const resend = getResendClient();
-  const siteUrl = env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+  const siteUrl = env.NEXT_PUBLIC_SITE_URL || getPublicSiteUrl();
   const adminUrl = `${siteUrl}${adminPath(`applications/${params.applicationId}`)}`;
 
   const candidateEmail = buildCandidateConfirmationEmail({
