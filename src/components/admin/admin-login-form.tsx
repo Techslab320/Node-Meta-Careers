@@ -23,21 +23,32 @@ export function AdminLoginForm() {
     setLoading(true);
     setError(null);
 
-    const result = await signIn("credentials", {
-      email,
-      password,
-      redirect: false,
-    });
+    try {
+      const result = await signIn("credentials", {
+        email,
+        password,
+        redirect: false,
+        callbackUrl: adminBasePath,
+      });
 
-    setLoading(false);
+      if (result?.error) {
+        setError("Invalid email or password.");
+        return;
+      }
 
-    if (result?.error) {
-      setError("Invalid email or password.");
-      return;
+      if (!result?.ok) {
+        setError("Unable to sign in. Please try again.");
+        return;
+      }
+
+      router.push(searchParams.get("callbackUrl") || adminBasePath);
+      router.refresh();
+    } catch (loginError) {
+      console.error("Admin sign-in failed", loginError);
+      setError("Unable to sign in. Please try again.");
+    } finally {
+      setLoading(false);
     }
-
-    router.push(searchParams.get("callbackUrl") || adminBasePath);
-    router.refresh();
   }
 
   return (

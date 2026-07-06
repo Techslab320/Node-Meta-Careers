@@ -17,6 +17,7 @@ import {
   validateResumeFile,
   type ApplicationFormInput,
 } from "@/lib/validation/application";
+import { parseJsonResponse } from "@/lib/api/parse-json-response";
 import type { JobDocument } from "@/types";
 
 interface ApplicationFormProps {
@@ -81,14 +82,14 @@ export function ApplicationForm({ job, turnstileSiteKey }: ApplicationFormProps)
       });
 
       if (!uploadResponse.ok) {
-        const payload = (await uploadResponse.json()) as { error?: string };
+        const payload = await parseJsonResponse<{ error?: string }>(uploadResponse);
         throw new Error(payload.error || "Resume upload failed");
       }
 
-      const uploadResult = (await uploadResponse.json()) as {
+      const uploadResult = await parseJsonResponse<{
         url: string;
         filename: string;
-      };
+      }>(uploadResponse);
 
       const response = await fetch("/api/applications", {
         method: "POST",
@@ -101,11 +102,11 @@ export function ApplicationForm({ job, turnstileSiteKey }: ApplicationFormProps)
       });
 
       if (!response.ok) {
-        const payload = (await response.json()) as { error?: string };
+        const payload = await parseJsonResponse<{ error?: string }>(response);
         throw new Error(payload.error || "Application submission failed");
       }
 
-      const result = (await response.json()) as { id?: string };
+      const result = await parseJsonResponse<{ id?: string }>(response);
       const successParams = new URLSearchParams({ job: job.title });
       if (result.id) successParams.set("applicationId", result.id);
 
