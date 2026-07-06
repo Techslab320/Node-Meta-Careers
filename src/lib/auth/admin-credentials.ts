@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "crypto";
 import { getEnv, readAuthSecretFromProcessEnv } from "@/config/env";
 
 function safeEqualString(expected: string, provided: string) {

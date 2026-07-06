@@ -173,5 +173,3 @@ export function getPublicSiteUrl(): string {
   }
   return resolveHostedSiteUrl() || "http://localhost:3000";
 }
-
-export { isAdminAuthConfigured } from "@/lib/auth/admin-credentials";
