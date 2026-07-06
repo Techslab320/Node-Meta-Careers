@@ -1,17 +1,27 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Send } from "lucide-react";
+import { Plus, Send } from "lucide-react";
 import { ChatEmojiPicker } from "@/components/chat/chat-emoji-picker";
 import { ChatMessageBubble } from "@/components/chat/chat-message-bubble";
 import { ChatReplyComposerBanner } from "@/components/chat/chat-reply-status";
 import { InterviewChatRoomLayout } from "@/components/interview/interview-chat-room-layout";
 import { ParticipantAvatar } from "@/components/interview/participant-avatar";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { Alert } from "@/components/ui/card";
 import type { ChatRoomSessionDocument } from "@/config/chat-room-session";
 import type { ChatRoomMessageDocument } from "@/config/chat-room-message";
-import type { ChatRoomSettingsInput, HrInterviewer } from "@/config/chat-room";
+import {
+  getDefaultInterviewerRole,
+  hrInterviewerRoles,
+  maxHrInterviewerCount,
+  normalizeHrInterviewers,
+  type ChatRoomSettingsInput,
+  type HrInterviewer,
+  type HrInterviewerRole,
+} from "@/config/chat-room";
 import { insertTextAtSelection, restoreInputSelection } from "@/lib/chat/insert-emoji";
 
 interface AdminChatRoomPanelProps {
@@ -81,6 +91,10 @@ function AdminHrInterviewerComposer({
   onToggleHrBot,
   onDraftChange,
   onSend,
+  onFullNameChange,
+  onRoleChange,
+  onAvatarUpload,
+  uploadingAvatar,
 }: {
   interviewer: HrInterviewer;
   index: number;
@@ -99,6 +113,10 @@ function AdminHrInterviewerComposer({
   onToggleHrBot: () => void;
   onDraftChange: (value: string) => void;
   onSend: () => void;
+  onFullNameChange: (value: string) => void;
+  onRoleChange: (value: HrInterviewerRole) => void;
+  onAvatarUpload: (file: File) => void;
+  uploadingAvatar: boolean;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -141,18 +159,66 @@ function AdminHrInterviewerComposer({
           size="sm"
         />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-white">
-            {interviewer.fullName.trim() || "Unnamed interviewer"}
-          </p>
-          <div className="mt-1 flex items-center justify-between gap-2">
-            <p className="truncate text-xs text-slate-400">{interviewer.role}</p>
-            <HrBotSwitch
-              enabled={hrBotEnabled}
-              loading={togglingHrBot}
-              disabled={joining || loggingOut}
-              onToggle={onToggleHrBot}
-            />
-          </div>
+          {joined ? (
+            <>
+              <p className="truncate text-sm font-medium text-white">
+                {interviewer.fullName.trim() || "Unnamed interviewer"}
+              </p>
+              <div className="mt-1 flex items-center justify-between gap-2">
+                <p className="truncate text-xs text-slate-400">{interviewer.role}</p>
+                <HrBotSwitch
+                  enabled={hrBotEnabled}
+                  loading={togglingHrBot}
+                  disabled={joining || loggingOut}
+                  onToggle={onToggleHrBot}
+                />
+              </div>
+            </>
+          ) : (
+            <div className="space-y-2">
+              <Input
+                label="Full name"
+                name={`interviewer-${index}-name`}
+                value={interviewer.fullName}
+                onChange={(event) => onFullNameChange(event.target.value)}
+                required
+              />
+              <Select
+                label="Role"
+                name={`interviewer-${index}-role`}
+                value={interviewer.role}
+                onChange={(event) => onRoleChange(event.target.value as HrInterviewerRole)}
+                options={hrInterviewerRoles.map((role) => ({ value: role, label: role }))}
+                required
+              />
+              <div>
+                <label className="mb-2 block text-sm text-slate-300">Avatar</label>
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/gif"
+                  disabled={uploadingAvatar}
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) onAvatarUpload(file);
+                    event.target.value = "";
+                  }}
+                  className="block w-full text-xs text-slate-400 file:mr-2 file:rounded-lg file:border-0 file:bg-slate-800 file:px-3 file:py-1.5 file:text-xs file:text-slate-200 hover:file:bg-slate-700"
+                />
+                {uploadingAvatar ? (
+                  <p className="mt-1 text-xs text-slate-500">Uploading...</p>
+                ) : null}
+              </div>
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <p className="text-xs text-slate-500">#{index + 1}</p>
+                <HrBotSwitch
+                  enabled={hrBotEnabled}
+                  loading={togglingHrBot}
+                  disabled={joining || loggingOut}
+                  onToggle={onToggleHrBot}
+                />
+              </div>
+            </div>
+          )}
           <div className="mt-2 flex justify-end">
             {!joined ? (
               <Button
@@ -259,7 +325,10 @@ export function AdminChatRoomPanel({
   const [togglingHrBotIndex, setTogglingHrBotIndex] = useState<number | null>(null);
   const [cardErrors, setCardErrors] = useState<Record<number, string>>({});
   const [error, setError] = useState<string | null>(null);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [uploadingAvatarIndex, setUploadingAvatarIndex] = useState<number | null>(null);
   const lastSessionMutationAt = useRef(0);
+  const settingsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const adminFetchInit: RequestInit = { credentials: "include" };
 
@@ -271,6 +340,116 @@ export function AdminChatRoomPanel({
   useEffect(() => {
     setRoomSettings(settings);
   }, [settings]);
+
+  useEffect(() => {
+    return () => {
+      if (settingsSaveTimer.current) {
+        clearTimeout(settingsSaveTimer.current);
+      }
+    };
+  }, []);
+
+  async function persistSettings(next: ChatRoomSettingsInput) {
+    setSavingSettings(true);
+    setError(null);
+
+    try {
+      const payload = {
+        ...next,
+        hrInterviewers: normalizeHrInterviewers(next.hrInterviewerCount, next.hrInterviewers),
+      };
+
+      const response = await fetch("/api/admin/chat-room", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        const data = (await response.json()) as { error?: string };
+        throw new Error(data.error || "Unable to save interviewer settings");
+      }
+
+      const data = (await response.json()) as { settings: ChatRoomSettingsInput };
+      setRoomSettings(data.settings);
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error ? saveError.message : "Unable to save interviewer settings",
+      );
+    } finally {
+      setSavingSettings(false);
+    }
+  }
+
+  function updateInterviewer(index: number, patch: Partial<HrInterviewer>) {
+    setRoomSettings((current) => {
+      const nextInterviewers = current.hrInterviewers.map((interviewer, interviewerIndex) =>
+        interviewerIndex === index ? { ...interviewer, ...patch } : interviewer,
+      );
+      const next = {
+        ...current,
+        hrInterviewers: normalizeHrInterviewers(current.hrInterviewerCount, nextInterviewers),
+      };
+
+      if (settingsSaveTimer.current) {
+        clearTimeout(settingsSaveTimer.current);
+      }
+      settingsSaveTimer.current = setTimeout(() => {
+        void persistSettings(next);
+      }, 500);
+
+      return next;
+    });
+  }
+
+  async function handleAddInterviewer() {
+    if (roomSettings.hrInterviewerCount >= maxHrInterviewerCount || savingSettings) return;
+
+    const nextCount = roomSettings.hrInterviewerCount + 1;
+    const nextInterviewers = normalizeHrInterviewers(nextCount, [
+      ...roomSettings.hrInterviewers,
+      {
+        fullName: `HR Interviewer ${nextCount}`,
+        avatarUrl: "",
+        role: getDefaultInterviewerRole(nextCount - 1),
+      },
+    ]);
+
+    await persistSettings({
+      ...roomSettings,
+      hrInterviewerCount: nextCount,
+      hrInterviewers: nextInterviewers,
+    });
+  }
+
+  async function handleAvatarUpload(index: number, file: File) {
+    setUploadingAvatarIndex(index);
+    setError(null);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const response = await fetch("/api/admin/uploads/avatar", {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json()) as { error?: string };
+        throw new Error(payload.error || "Unable to upload avatar");
+      }
+
+      const result = (await response.json()) as { url: string };
+      updateInterviewer(index, { avatarUrl: result.url });
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "Unable to upload avatar");
+    } finally {
+      setUploadingAvatarIndex(null);
+    }
+  }
 
   function applySessionUpdate(next: ChatRoomSessionDocument, fromPoll = false) {
     setSession((current) => {
@@ -620,7 +799,7 @@ export function AdminChatRoomPanel({
     <>
       {interviewers.map((interviewer, index) => (
         <AdminHrInterviewerComposer
-          key={`${interviewer.fullName}-${index}`}
+          key={`interviewer-${index}`}
           interviewer={interviewer}
           index={index}
           joined={joinedIndexes.includes(index)}
@@ -643,8 +822,29 @@ export function AdminChatRoomPanel({
             setDrafts((current) => ({ ...current, [index]: value }))
           }
           onSend={() => void handleSend(index)}
+          onFullNameChange={(value) => updateInterviewer(index, { fullName: value })}
+          onRoleChange={(value) => updateInterviewer(index, { role: value })}
+          onAvatarUpload={(file) => void handleAvatarUpload(index, file)}
+          uploadingAvatar={uploadingAvatarIndex === index}
         />
       ))}
+
+      {roomSettings.hrInterviewerCount < maxHrInterviewerCount ? (
+        <Button
+          type="button"
+          variant="secondary"
+          className="w-full"
+          disabled={savingSettings}
+          onClick={() => void handleAddInterviewer()}
+        >
+          <Plus className="h-4 w-4" aria-hidden />
+          Add HR interviewer
+        </Button>
+      ) : null}
+
+      {savingSettings ? (
+        <p className="text-center text-xs text-slate-500">Saving interviewer settings...</p>
+      ) : null}
     </>
   );
 
@@ -658,7 +858,7 @@ export function AdminChatRoomPanel({
       fullScreen={fullScreen}
       showHrInterviewers={false}
       leftAside={hrSidebar}
-      leftAsideClassName="md:w-72 lg:w-80"
+      leftAsideClassName="w-full md:w-80 lg:w-96"
       headerActions={headerActions}
     >
       <div
