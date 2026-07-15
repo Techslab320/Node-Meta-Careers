@@ -42,7 +42,7 @@ export default async function AdminChatRoomSessionPage({
     <div>
       <Link
         href={adminPath("chat-room")}
-        className="inline-flex items-center gap-2 text-sm text-cyan-300 hover:text-cyan-200"
+        className="inline-flex items-center gap-2 text-sm text-brand-light hover:text-brand-light"
       >
         <ArrowLeft className="h-4 w-4" aria-hidden />
         Back to chat rooms

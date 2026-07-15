@@ -125,7 +125,7 @@ export function InterviewChatRoomLayout({
     >
       <div className="relative z-20 flex shrink-0 flex-col gap-3 border-b border-slate-800 pb-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:pb-4">
         <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-cyan-500/15 text-cyan-300 sm:h-11 sm:w-11">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-light/15 text-brand-light sm:h-11 sm:w-11">
             <MessageSquare className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden />
           </div>
           <div className="min-w-0">

@@ -101,7 +101,7 @@ export function VerificationCodeModal({
                 onKeyDown={(event) => handleKeyDown(index, event)}
                 className={cn(
                   "h-12 w-10 rounded-lg border border-slate-700 bg-slate-950 text-center text-lg font-semibold text-white",
-                  "focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30",
+                  "focus:border-brand-light focus:outline-none focus:ring-2 focus:ring-brand-light/30",
                   error && "border-red-500/70",
                 )}
                 aria-label={`Verification digit ${index + 1}`}

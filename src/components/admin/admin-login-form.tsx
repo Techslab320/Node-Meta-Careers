@@ -64,7 +64,7 @@ export function AdminLoginForm() {
   return (
     <div className="mx-auto flex min-h-screen max-w-md items-center px-4 py-16">
       <Card className="w-full">
-        <Logo href={null} className="justify-center" iconClassName="h-11 w-11" textClassName="text-2xl" />
+        <Logo href={null} layout="stacked" className="justify-center" iconClassName="h-11 w-11 sm:h-12 sm:w-12" textClassName="text-2xl" />
         <h1 className="mt-6 text-center text-2xl font-bold text-white">Admin Login</h1>
         <p className="mt-2 text-center text-sm text-slate-400">
           Sign in to manage jobs and applications.

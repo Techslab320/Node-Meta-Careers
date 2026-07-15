@@ -53,7 +53,7 @@ export default async function AdminDashboardPage() {
         <Card>
           <h2 className="text-lg font-semibold text-white">Quick actions</h2>
           <div className="mt-4 flex flex-wrap gap-3">
-            <Link href={adminPath("jobs/new")} className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-medium text-slate-950">
+            <Link href={adminPath("jobs/new")} className="rounded-lg bg-brand-light px-4 py-2 text-sm font-medium text-slate-950">
               Create job
             </Link>
             <Link href={adminPath("applications")} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-200">

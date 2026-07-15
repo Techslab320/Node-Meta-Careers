@@ -310,6 +310,122 @@ export const nodeMetaPositions: PositionSeed[] = [
       "Open to full-time, part-time, contract, or support at mid-level or senior",
     ],
   },
+  {
+    title: "Designer",
+    slug: "designer",
+    department: "Design",
+    location: "Remote",
+    remoteType: "remote",
+    compensationBase: { midMin: 82000, midMax: 118000 },
+    summary:
+      "Shape NodeMeta's product and brand experience across the NFT marketplace, staking dashboard, and marketing touchpoints with clear, trustworthy Web3 UX.",
+    overview:
+      "You'll own visual design for NodeMeta's user-facing products and brand presence — from marketplace flows and staking interfaces to campaign assets and design systems that make complex crypto interactions feel approachable.",
+    responsibilities: [
+      "Design responsive UI for the NFT marketplace, staking dashboard, and SmartCommerce experiences",
+      "Create and maintain a cohesive design system aligned with the NodeMeta brand",
+      "Collaborate with frontend engineers to deliver polished, implementation-ready specs",
+      "Produce marketing visuals, social assets, and landing page designs for product launches",
+      "Run lightweight user research and usability reviews to improve conversion and clarity",
+    ],
+    requiredQualifications: [
+      "3+ years designing digital products (web or mobile), with a strong portfolio",
+      "Proficiency in Figma and modern design workflows",
+      "Ability to simplify complex flows into clear, trustworthy user experiences",
+      "Strong visual design fundamentals: typography, layout, color, and hierarchy",
+    ],
+    preferredQualifications: [
+      "Experience designing for Web3, fintech, or crypto products",
+      "Motion design or illustration skills for marketing and product moments",
+    ],
+    technologies: ["Figma", "Design Systems", "Prototyping", "Web UX", "Brand Design"],
+    benefits: [
+      "Shape the visual identity of a growing Web3 platform",
+      "Remote-friendly design collaboration",
+      "Work across product and marketing",
+      "Open to full-time, part-time, contract, or support at mid-level or senior",
+    ],
+    featured: true,
+  },
+  {
+    title: "Finance Manager",
+    slug: "finance-manager",
+    department: "Finance",
+    location: "Remote",
+    remoteType: "remote",
+    compensationBase: { midMin: 98000, midMax: 138000 },
+    summary:
+      "Lead financial planning, reporting, and operational controls for NodeMeta's Web3 marketplace, token economy, and commerce initiatives.",
+    overview:
+      "You'll build and run the finance function for a fast-moving Web3 company — covering budgeting, reporting, treasury coordination, vendor payments, and the operational finance needed to support marketplace and SmartCommerce growth.",
+    responsibilities: [
+      "Own monthly reporting, forecasting, and budget tracking across product and operations teams",
+      "Manage accounts payable/receivable, vendor contracts, and payment workflows",
+      "Partner with leadership on runway planning, hiring plans, and cost discipline",
+      "Support treasury and token-related finance workflows with clear documentation and controls",
+      "Prepare materials for audits, tax advisors, and external stakeholders as needed",
+    ],
+    requiredQualifications: [
+      "4+ years in finance, accounting, or FP&A roles",
+      "Strong Excel/spreadsheet modeling and financial reporting skills",
+      "Experience with accounting tools (QuickBooks, Xero, NetSuite, or similar)",
+      "Comfort working in a remote, startup-style environment with evolving processes",
+    ],
+    preferredQualifications: [
+      "Experience in crypto, fintech, or marketplace businesses",
+      "CPA, ACCA, or equivalent finance qualification",
+    ],
+    technologies: ["QuickBooks", "Excel", "Financial Modeling", "FP&A", "Reporting"],
+    benefits: [
+      "Build finance operations for a Web3 product company",
+      "Remote-friendly team",
+      "Cross-functional partnership with leadership",
+      "Open to full-time, part-time, contract, or support at mid-level or senior",
+    ],
+  },
+  {
+    title: "Web3 Marketing Manager",
+    slug: "web3-marketing-manager",
+    department: "Marketing",
+    location: "Remote",
+    remoteType: "remote",
+    compensationBase: { midMin: 92000, midMax: 132000 },
+    summary:
+      "Drive community growth, campaign execution, and brand awareness for NodeMeta across Web3 channels, partnerships, and product launches.",
+    overview:
+      "You'll lead marketing for NodeMeta's ecosystem — planning campaigns, managing community-facing content, coordinating launches, and translating product milestones into compelling stories across social, email, and partner channels.",
+    responsibilities: [
+      "Plan and execute marketing campaigns for marketplace, staking, and SmartCommerce launches",
+      "Manage social content calendars across Twitter/X, Telegram, Discord, and other Web3 channels",
+      "Coordinate with design and product on landing pages, announcements, and launch assets",
+      "Track campaign performance and refine messaging based on community feedback and metrics",
+      "Support partnership outreach, AMAs, and community events that grow NodeMeta's audience",
+    ],
+    requiredQualifications: [
+      "3+ years in marketing, growth, or community roles",
+      "Strong writing skills for social, email, and campaign copy",
+      "Hands-on experience with Web3 community platforms and crypto-native audiences",
+      "Comfort working independently in a remote, fast-moving environment",
+    ],
+    preferredQualifications: [
+      "Prior experience marketing NFT, DeFi, or blockchain products",
+      "Familiarity with analytics tools and campaign attribution",
+    ],
+    technologies: [
+      "Twitter/X",
+      "Telegram",
+      "Discord",
+      "Email Marketing",
+      "Campaign Analytics",
+    ],
+    benefits: [
+      "Own growth and brand storytelling for a Web3 platform",
+      "Remote-friendly marketing team",
+      "Work closely with product launches and community",
+      "Open to full-time, part-time, contract, or support at mid-level or senior",
+    ],
+    featured: true,
+  },
 ];
 
 export function positionToJobDocument(

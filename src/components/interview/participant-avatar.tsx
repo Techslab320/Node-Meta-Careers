@@ -43,7 +43,7 @@ export function ParticipantAvatar({
   const displayUrl = avatarUrl ? getPublicAvatarDisplayUrl(avatarUrl) : null;
   const initials = getInitials(name || "?");
   const borderClass =
-    variant === "candidate" ? "border-cyan-500/40" : "border-slate-700";
+    variant === "candidate" ? "border-brand-light/40" : "border-slate-700";
 
   if (fill) {
     if (displayUrl) {
@@ -66,9 +66,9 @@ export function ParticipantAvatar({
         className={cn(
           "flex aspect-square w-full items-center justify-center rounded-full border-2 text-3xl font-semibold",
           borderClass,
-          variant === "candidate" && "bg-cyan-500/15 text-cyan-200",
+          variant === "candidate" && "bg-brand-light/15 text-brand-light",
           variant === "hr" && "bg-slate-800 text-slate-300",
-          variant === "bot" && "border-emerald-500/30 bg-emerald-500/10 text-emerald-200",
+          variant === "bot" && "border-brand-dark/30 bg-brand-dark/10 text-brand-light",
           className,
         )}
       >
@@ -91,7 +91,7 @@ export function ParticipantAvatar({
           "shrink-0 rounded-full object-cover",
           largeAvatarBorder(size),
           sizeClasses[size],
-          variant === "candidate" ? "border-cyan-500/40" : "border-slate-700",
+          variant === "candidate" ? "border-brand-light/40" : "border-slate-700",
         )}
       />
     );
@@ -104,9 +104,9 @@ export function ParticipantAvatar({
         largeAvatarBorder(size),
         sizeClasses[size],
         variant === "candidate" &&
-          "border-cyan-500/40 bg-cyan-500/15 text-cyan-200",
+          "border-brand-light/40 bg-brand-light/15 text-brand-light",
         variant === "hr" && "border-slate-700 bg-slate-800 text-slate-300",
-        variant === "bot" && "border-emerald-500/30 bg-emerald-500/10 text-emerald-200",
+        variant === "bot" && "border-brand-dark/30 bg-brand-dark/10 text-brand-light",
       )}
     >
       {variant === "bot" ? (

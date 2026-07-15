@@ -27,7 +27,7 @@ export function JobCard({ job, employmentType, experienceLevel }: JobCardProps) 
     <Card className="flex h-full flex-col">
       <div className="flex flex-wrap gap-2">
         <Badge>{job.department}</Badge>
-        <Badge className="border-emerald-500/20 bg-emerald-500/10 text-emerald-200">
+        <Badge className="border-brand-dark/20 bg-brand-dark/10 text-brand-light">
           {formatLabel(job.remoteType)}
         </Badge>
       </div>
@@ -37,12 +37,12 @@ export function JobCard({ job, employmentType, experienceLevel }: JobCardProps) 
         <span>{job.location}</span>
       </div>
       {salary ? (
-        <p className="mt-3 text-sm font-medium text-cyan-300">{salary}</p>
+        <p className="mt-3 text-sm font-medium text-brand-light">{salary}</p>
       ) : null}
       <p className="mt-4 flex-1 text-sm leading-6 text-slate-300">{job.summary}</p>
       <Link
         href={`/jobs/${job.slug}`}
-        className="mt-6 inline-flex items-center gap-2 text-sm font-medium text-cyan-300 hover:text-cyan-200"
+        className="mt-6 inline-flex items-center gap-2 text-sm font-medium text-brand-light hover:text-brand-light"
       >
         View Position
         <ArrowRight className="h-4 w-4" aria-hidden />

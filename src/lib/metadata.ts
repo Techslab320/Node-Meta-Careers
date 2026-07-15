@@ -21,6 +21,11 @@ export function createPageMetadata({
     description,
     alternates: { canonical: url },
     robots: noIndex ? { index: false, follow: false } : undefined,
+    icons: {
+      icon: [{ url: "/images/nodemeta-favicon.png", sizes: "any", type: "image/png" }],
+      apple: "/images/nodemeta-favicon.png",
+      shortcut: "/images/nodemeta-favicon.png",
+    },
     openGraph: {
       title,
       description,

@@ -19,11 +19,11 @@ export default async function AdminLayout({
 
   return (
     <Providers>
-    <div className="min-h-screen bg-slate-950">
+    <div className="min-h-screen bg-[#080612]">
       <div className="border-b border-slate-800 bg-slate-900/60">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
           <div>
-            <Logo href={adminBasePath} iconClassName="h-9 w-9" textClassName="text-xl sm:text-[1.35rem]" />
+            <Logo href={adminBasePath} layout="inline" iconClassName="h-9 w-9" textClassName="text-xl sm:text-[1.35rem]" />
             <p className="mt-1 text-sm text-slate-400">Admin · {session.user.email}</p>
           </div>
           <div className="flex items-center gap-1">

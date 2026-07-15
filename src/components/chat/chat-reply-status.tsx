@@ -12,12 +12,12 @@ export function ChatReplyStatus({ reply, align = "left" }: ChatReplyStatusProps)
   return (
     <div
       className={`mb-2 rounded-lg border-l-[3px] bg-black/25 px-2.5 py-2 ${
-        isRight ? "border-cyan-300/70" : "border-cyan-500/70"
+        isRight ? "border-brand-light/70" : "border-brand-light/70"
       }`}
     >
       <div
         className={`flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide ${
-          isRight ? "text-cyan-200" : "text-cyan-300"
+          isRight ? "text-brand-light" : "text-brand-light"
         }`}
       >
         <CornerDownRight className="h-3 w-3 shrink-0" aria-hidden />
@@ -46,9 +46,9 @@ export function ChatReplyComposerBanner({
   onClear,
 }: ChatReplyComposerBannerProps) {
   return (
-    <div className="flex items-start justify-between gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs">
+    <div className="flex items-start justify-between gap-2 rounded-lg border border-brand-light/30 bg-brand-light/10 px-3 py-2 text-xs">
       <div className="min-w-0">
-        <div className="flex items-center gap-1 font-semibold uppercase tracking-wide text-cyan-300">
+        <div className="flex items-center gap-1 font-semibold uppercase tracking-wide text-brand-light">
           <CornerDownRight className="h-3 w-3 shrink-0" aria-hidden />
           <span>Replying to {senderName}</span>
         </div>

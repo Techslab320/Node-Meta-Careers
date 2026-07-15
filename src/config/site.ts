@@ -106,3 +106,49 @@ export const whyJoinCards = [
     icon: "zap",
   },
 ] as const;
+
+export const careersHeroFeatures = [
+  {
+    title: "AI-Powered",
+    description: "Smart tools for Web3 product teams.",
+    icon: "sparkles",
+  },
+  {
+    title: "Security-First",
+    description: "Audited, protected, and transparent hiring.",
+    icon: "shield",
+  },
+  {
+    title: "Web3 Utility",
+    description: "Build products with real on-chain value.",
+    icon: "layers",
+  },
+  {
+    title: "Community Driven",
+    description: "Join a global team building together.",
+    icon: "users",
+  },
+] as const;
+
+export const careersHeroStats = [
+  { value: "3M+", label: "Global community" },
+  { value: "50K+", label: "Digital assets supported" },
+  { value: "$10M+", label: "Ecosystem volume" },
+] as const;
+
+export const careersHeroNodes = [
+  { label: "Engineering roles", position: "top-[8%] left-[12%]" },
+  { label: "Interview chat", position: "top-[18%] right-[4%]" },
+  { label: "Remote-friendly", position: "bottom-[28%] left-[0%]" },
+  { label: "Web3 products", position: "bottom-[12%] right-[8%]" },
+  { label: "Career growth", position: "top-[42%] right-[0%]" },
+] as const;
+
+export const careersAnnouncement = {
+  badge: "Careers",
+  message:
+    "Node Meta is hiring across engineering, product, and operations. Explore open roles and apply securely through this portal.",
+  href: "/jobs",
+  linkLabel: "View open roles",
+  date: "2026",
+} as const;

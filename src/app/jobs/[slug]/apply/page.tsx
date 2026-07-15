@@ -33,7 +33,7 @@ export default async function ApplyPage({ params }: ApplyPageProps) {
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-16 sm:px-6 lg:px-8">
-      <Link href={`/jobs/${job.slug}`} className="text-sm text-cyan-300 hover:text-cyan-200">
+      <Link href={`/jobs/${job.slug}`} className="text-sm text-brand-light hover:text-brand-light">
         ← Back to job details
       </Link>
       <h1 className="mt-6 text-3xl font-bold text-white">Apply for {job.title}</h1>

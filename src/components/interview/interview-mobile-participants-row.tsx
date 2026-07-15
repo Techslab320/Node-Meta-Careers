@@ -34,7 +34,7 @@ export function InterviewMobileParticipantsRow({
               key={participant.id}
               type="button"
               onClick={() => onSelect(participant)}
-              className="shrink-0 rounded-full focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
+              className="shrink-0 rounded-full focus:outline-none focus:ring-2 focus:ring-brand-light/40"
               aria-label={`View ${participant.name}`}
             >
               <ParticipantAvatar
@@ -56,7 +56,7 @@ export function InterviewMobileParticipantsRow({
           <button
             type="button"
             onClick={() => onSelect(candidate)}
-            className="shrink-0 rounded-full focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
+            className="shrink-0 rounded-full focus:outline-none focus:ring-2 focus:ring-brand-light/40"
             aria-label={`View ${candidate.name}`}
           >
             <ParticipantAvatar

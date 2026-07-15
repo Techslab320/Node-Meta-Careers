@@ -240,59 +240,41 @@ export function InterviewSessionChat({
       </div>
 
       {error ? (
-        <div className="mt-3 shrink-0 sm:mt-4">
+        <div className="mt-4">
           <Alert variant="warning">{error}</Alert>
         </div>
       ) : null}
 
-      <div
-        className={cn(
-          "mt-3 shrink-0 sm:mt-4",
-          fullScreen &&
-            "border-t border-slate-800/80 bg-slate-950/95 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur-sm md:border-t-0 md:bg-transparent md:pt-0 md:pb-0 md:backdrop-blur-none",
-        )}
-      >
-        {mobileComposerFooter ? (
-          <div className="mb-3 md:hidden">{mobileComposerFooter}</div>
+      <form onSubmit={handleSend} className="mt-4 space-y-2">
+        {replyTo ? (
+          <ChatReplyComposerBanner
+            senderName={replyTo.senderName}
+            content={replyTo.content}
+            onClear={() => setReplyTo(null)}
+          />
         ) : null}
 
-        <form onSubmit={handleSend} className="space-y-2">
-          {replyTo ? (
-            <ChatReplyComposerBanner
-              senderName={replyTo.senderName}
-              content={replyTo.content}
-              onClear={() => setReplyTo(null)}
-            />
-          ) : null}
+        <div className="flex gap-2">
+          <input
+            ref={inputRef}
+            type="text"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder="Type your message..."
+            disabled={loading}
+            className="flex-1 rounded-lg border border-slate-700 bg-slate-900/80 px-4 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-brand-light focus:outline-none focus:ring-2 focus:ring-brand-light/30 disabled:opacity-60"
+          />
+          <ChatEmojiPicker onSelect={handleEmojiSelect} disabled={loading} placement="above" />
+          <Button type="submit" disabled={loading || !draft.trim()}>
+            <Send className="h-4 w-4" aria-hidden />
+            Send
+          </Button>
+        </div>
+      </form>
 
-          <div className="flex items-center gap-2">
-            <input
-              ref={inputRef}
-              type="text"
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              placeholder="Type your message..."
-              disabled={loading}
-              className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 disabled:opacity-60 sm:px-4"
-            />
-            <ChatEmojiPicker onSelect={handleEmojiSelect} disabled={loading} placement="above" />
-            <Button
-              type="submit"
-              size="sm"
-              className="shrink-0 px-3 sm:px-4"
-              disabled={loading || !draft.trim()}
-              aria-label="Send message"
-            >
-              <Send className="h-4 w-4" aria-hidden />
-              <span className="hidden sm:inline">Send</span>
-            </Button>
-          </div>
-        </form>
-
-        {textChatNotice ? (
-          <p className="mt-4 hidden text-xs text-slate-500 md:block">{textChatNotice}</p>
-        ) : null}
-      </div>
+      {textChatNotice ? (
+        <p className="mt-4 text-xs text-slate-500">{textChatNotice}</p>
+      ) : null}
     </div>
   );
 }

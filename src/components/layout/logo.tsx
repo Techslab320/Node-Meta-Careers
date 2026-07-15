@@ -8,6 +8,7 @@ interface LogoProps {
   textClassName?: string;
   href?: string | null;
   priority?: boolean;
+  layout?: "inline" | "stacked";
 }
 
 export function Logo({
@@ -16,28 +17,31 @@ export function Logo({
   textClassName,
   href = "/",
   priority = false,
+  layout = "stacked",
 }: LogoProps) {
   const content = (
-    <div className={cn("inline-flex items-center gap-3", className)}>
+    <div
+      className={cn(
+        "inline-flex items-center",
+        layout === "stacked" ? "flex-col gap-2.5" : "flex-row gap-3",
+        className,
+      )}
+    >
       <Image
         src="/images/nodemeta-logo.png"
         alt=""
-        width={48}
-        height={48}
+        width={64}
+        height={64}
         priority={priority}
         aria-hidden
-        className={cn("h-10 w-10 shrink-0 sm:h-11 sm:w-11", iconClassName)}
-      />
-      <span
         className={cn(
-          "select-none font-bold tracking-tight text-white",
-          "text-[1.35rem] leading-none sm:text-[1.55rem]",
-          textClassName,
+          "shrink-0 object-contain",
+          layout === "stacked" ? "h-14 w-14 sm:h-16 sm:w-16" : "h-10 w-10 sm:h-11 sm:w-11",
+          iconClassName,
         )}
-        aria-label="NODEMETA"
-      >
-        <span className="text-white">NODE</span>
-        <span className="text-[#2ec4b6]">META</span>
+      />
+      <span className={cn("brand-logo-text select-none whitespace-nowrap", textClassName)} aria-label="NODEMETA">
+        NODE<span className="brand-meta-text">META</span>
       </span>
     </div>
   );

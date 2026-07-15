@@ -54,19 +54,19 @@ export function WaitingRecruiterModal({
         aria-hidden
       />
 
-      <div className="relative my-auto w-full max-w-sm overflow-hidden rounded-2xl border border-slate-700/80 bg-slate-950/95 p-5 shadow-2xl shadow-cyan-950/30 backdrop-blur-md sm:max-w-md sm:p-6">
+      <div className="relative my-auto w-full max-w-sm overflow-hidden rounded-2xl border border-slate-700/80 bg-slate-950/95 p-5 shadow-2xl shadow-brand-dark/30 backdrop-blur-md sm:max-w-md sm:p-6">
         <div className="flex flex-col items-center text-center">
           <div className="relative mb-3 flex h-16 w-16 items-center justify-center sm:mb-4 sm:h-[88px] sm:w-[88px]">
             <div
-              className="absolute inset-0 rounded-full border border-cyan-500/20"
+              className="absolute inset-0 rounded-full border border-brand-light/20"
               aria-hidden
             />
             <div
-              className="absolute inset-0 animate-[spin_4s_linear_infinite] rounded-full border border-transparent border-t-cyan-400/70 border-r-cyan-400/30"
+              className="absolute inset-0 animate-[spin_4s_linear_infinite] rounded-full border border-transparent border-t-brand-light/70 border-r-brand-light/30"
               aria-hidden
             />
             <div
-              className="absolute inset-2 rounded-full border border-cyan-500/10"
+              className="absolute inset-2 rounded-full border border-brand-light/10"
               aria-hidden
             />
             <div className="relative flex h-12 w-12 items-center justify-center rounded-xl bg-slate-900/80 sm:h-14 sm:w-14">
@@ -81,16 +81,15 @@ export function WaitingRecruiterModal({
             </div>
           </div>
 
-          <p className="select-none text-lg font-bold tracking-tight sm:text-xl" aria-label="NODEMETA">
-            <span className="text-white">NODE</span>
-            <span className="text-[#2ec4b6]">META</span>
+          <p className="brand-logo-text select-none" aria-label="NODEMETA">
+            NODE<span className="brand-meta-text">META</span>
           </p>
 
           <p className="mt-2 text-xs text-slate-400 sm:text-sm">{waitingNotice}</p>
 
           <div className="mt-4 w-full sm:mt-5">
             <div className="h-0.5 overflow-hidden rounded-full bg-slate-800">
-              <div className="h-full w-1/3 animate-[waiting-progress_2.4s_ease-in-out_infinite] rounded-full bg-gradient-to-r from-cyan-500 to-teal-400" />
+              <div className="h-full w-1/3 animate-[waiting-progress_2.4s_ease-in-out_infinite] rounded-full bg-gradient-to-r from-brand-light to-brand-dark" />
             </div>
           </div>
 
@@ -98,7 +97,7 @@ export function WaitingRecruiterModal({
             {[0, 1, 2].map((index) => (
               <span
                 key={index}
-                className="h-1.5 w-1.5 animate-bounce rounded-full bg-cyan-400"
+                className="h-1.5 w-1.5 animate-bounce rounded-full bg-brand-light"
                 style={{ animationDelay: `${index * 0.15}s` }}
               />
             ))}

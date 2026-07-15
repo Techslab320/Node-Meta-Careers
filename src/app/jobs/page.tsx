@@ -76,8 +76,8 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
 
       <div className="mt-12">
         <Alert variant="info">
-        <p className="text-sm font-semibold text-cyan-100">Sourcing note</p>
-        <p className="mt-2 text-sm leading-6 text-cyan-50/90">
+        <p className="text-sm font-semibold text-brand-light/90">Sourcing note</p>
+        <p className="mt-2 text-sm leading-6 text-violet-50/90">
           {jobsPageIntro.sourcingNote}
         </p>
       </Alert>

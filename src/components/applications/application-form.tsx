@@ -17,6 +17,7 @@ import {
   validateResumeFile,
   type ApplicationFormInput,
 } from "@/lib/validation/application";
+import { isAssessmentRole } from "@/data/assessments";
 import { parseJsonResponse } from "@/lib/api/parse-json-response";
 import type { JobDocument } from "@/types";
 
@@ -107,6 +108,16 @@ export function ApplicationForm({ job, turnstileSiteKey }: ApplicationFormProps)
       }
 
       const result = await parseJsonResponse<{ id?: string }>(response);
+
+      if (isAssessmentRole(job.slug) && result.id) {
+        const assessmentParams = new URLSearchParams({
+          applicationId: result.id,
+          slug: job.slug,
+        });
+        router.push(`/assessment?${assessmentParams.toString()}`);
+        return;
+      }
+
       const successParams = new URLSearchParams({ job: job.title });
       if (result.id) successParams.set("applicationId", result.id);
 
@@ -174,13 +185,13 @@ export function ApplicationForm({ job, turnstileSiteKey }: ApplicationFormProps)
 
       <div className="space-y-2">
         <label htmlFor="resume" className="block text-sm font-medium text-slate-200">
-          Resume <span className="text-cyan-400">*</span>
+          Resume <span className="text-brand-light">*</span>
         </label>
         <input
           id="resume"
           type="file"
           accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          className={`block w-full rounded-lg border bg-slate-900/80 px-4 py-2.5 text-sm text-slate-200 file:mr-4 file:rounded-md file:border-0 file:bg-cyan-500/20 file:px-3 file:py-1.5 file:text-cyan-100 ${
+          className={`block w-full rounded-lg border bg-slate-900/80 px-4 py-2.5 text-sm text-slate-200 file:mr-4 file:rounded-md file:border-0 file:bg-brand-light/20 file:px-3 file:py-1.5 file:text-brand-light/90 ${
             resumeError ? "border-red-500/70" : "border-slate-700"
           }`}
           onChange={(event) => {
@@ -266,12 +277,12 @@ export function ApplicationForm({ job, turnstileSiteKey }: ApplicationFormProps)
       <label className="flex items-start gap-3 text-sm text-slate-300">
         <input
           type="checkbox"
-          className="mt-1 h-4 w-4 rounded border-slate-600 bg-slate-900 text-cyan-500 focus:ring-cyan-500"
+          className="mt-1 h-4 w-4 rounded border-slate-600 bg-slate-900 text-violet-500 focus:ring-brand-light"
           {...register("consentAccepted")}
         />
         <span>
           I agree to the processing of my application data as described in the{" "}
-          <Link href="/privacy" className="text-cyan-300 hover:text-cyan-200">
+          <Link href="/privacy" className="text-brand-light hover:text-brand-light">
             privacy notice
           </Link>
           .

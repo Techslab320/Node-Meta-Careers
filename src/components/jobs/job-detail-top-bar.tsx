@@ -24,7 +24,7 @@ export function JobDetailTopBar({
         <div className="flex shrink-0 flex-wrap items-center gap-3 lg:justify-end">
           <Link
             href={applyHref}
-            className="inline-flex rounded-lg bg-gradient-to-r from-cyan-500 to-emerald-500 px-6 py-3 text-sm font-semibold text-slate-950"
+            className="inline-flex rounded-lg bg-gradient-to-r from-brand-light to-brand-dark px-6 py-3 text-sm font-semibold text-slate-950"
           >
             Apply Now
           </Link>

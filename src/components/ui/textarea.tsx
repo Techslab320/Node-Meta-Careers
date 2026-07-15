@@ -21,7 +21,7 @@ export function Textarea({
       <textarea
         id={inputId}
         className={cn(
-          "min-h-28 w-full rounded-lg border border-slate-700 bg-slate-900/80 px-4 py-2.5 text-slate-100 placeholder:text-slate-500 focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30",
+          "min-h-28 w-full rounded-lg border border-slate-700 bg-slate-900/80 px-4 py-2.5 text-slate-100 placeholder:text-slate-500 focus:border-brand-light focus:outline-none focus:ring-2 focus:ring-brand-light/30",
           error && "border-red-500/70 focus:border-red-500 focus:ring-red-500/30",
           className,
         )}

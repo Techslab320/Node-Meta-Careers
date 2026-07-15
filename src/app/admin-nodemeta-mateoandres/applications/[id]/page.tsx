@@ -6,6 +6,7 @@ import { Card } from "@/components/ui/card";
 import { adminLoginPath, adminPath } from "@/config/admin";
 import { auth } from "@/lib/auth/auth";
 import { getApplicationById } from "@/lib/applications/queries";
+import { getAssessmentByApplicationId } from "@/lib/assessments/queries";
 import { createPageMetadata } from "@/lib/metadata";
 
 export const dynamic = "force-dynamic";
@@ -31,12 +32,13 @@ export default async function AdminApplicationDetailPage({
   const { id } = await params;
   const application = await getApplicationById(id);
   if (!application) notFound();
+  const assessment = await getAssessmentByApplicationId(id).catch(() => null);
 
   return (
     <div>
       <Link
         href={adminPath("applications")}
-        className="inline-flex items-center gap-2 text-sm text-cyan-300 hover:text-cyan-200"
+        className="inline-flex items-center gap-2 text-sm text-brand-light hover:text-brand-light"
       >
         <ArrowLeft className="h-4 w-4" aria-hidden />
         Back to applications
@@ -48,7 +50,7 @@ export default async function AdminApplicationDetailPage({
         Application for {application.jobTitle}
       </p>
       <Card className="mt-8">
-        <ApplicationDetailPanel application={application} />
+        <ApplicationDetailPanel application={application} assessment={assessment} />
       </Card>
     </div>
   );

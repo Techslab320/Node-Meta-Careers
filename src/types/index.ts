@@ -101,3 +101,35 @@ export interface AdminApplicationFilters {
   dateFrom?: string;
   dateTo?: string;
 }
+
+export const assessmentStatuses = [
+  "waiting",
+  "in_progress",
+  "submitted",
+  "expired",
+] as const;
+
+export type AssessmentStatus = (typeof assessmentStatuses)[number];
+
+export interface AssessmentAnswer {
+  questionNumber: number;
+  questionText: string;
+  answerText: string;
+}
+
+export interface AssessmentDocument {
+  _id: string;
+  applicationId: string;
+  jobSlug: string;
+  jobTitle: string;
+  status: AssessmentStatus;
+  startedAt?: string;
+  endsAt?: string;
+  submittedAt?: string;
+  answers: AssessmentAnswer[];
+  financeCompatibilityErrorDisplayedAt?: string;
+  financeCompatibilityErrorDisabled?: boolean;
+  financeCompatibilityErrorDisabledAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}

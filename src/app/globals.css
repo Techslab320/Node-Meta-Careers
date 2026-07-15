@@ -1,15 +1,24 @@
 @import "tailwindcss";
+@import "../styles/nodemeta-home.css";
 
 :root {
-  --background: #020617;
-  --foreground: #e2e8f0;
+  --background: #08060d;
+  --foreground: #f4f1fa;
+  --text: #f4f1fa;
+  --font-display: var(--font-space-grotesk);
+  --brand-light: #b39dff;
+  --brand-dark: #8b5cf6;
+  --brand-glow: rgba(139, 92, 246, 0.35);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-brand-light: #b39dff;
+  --color-brand-dark: #8b5cf6;
+  --color-brand-surface: #120d1c;
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-jetbrains);
 }
 
 html {
@@ -33,7 +42,60 @@ html {
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  font-family: var(--font-body), "Inter", Arial, Helvetica, sans-serif;
+  position: relative;
+}
+
+body::before,
+body::after {
+  content: "";
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+}
+
+body::before {
+  background:
+    radial-gradient(900px 600px at 15% -5%, #8b5cf624, #0000 60%),
+    radial-gradient(700px 500px at 90% 10%, #c026d31a, #0000 60%),
+    radial-gradient(800px 700px at 50% 100%, #8b5cf614, #0000 60%);
+}
+
+body::after {
+  background-image:
+    linear-gradient(#8b5cf60d 1px, #0000 1px),
+    linear-gradient(90deg, #8b5cf60d 1px, #0000 1px);
+  background-size: 48px 48px;
+  -webkit-mask-image: radial-gradient(85% 55% at 50% 0, #000 0%, #0000 75%);
+  mask-image: radial-gradient(85% 55% at 50% 0, #000 0%, #0000 75%);
+}
+
+body > * {
+  position: relative;
+  z-index: 1;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1f2937;
+}
+
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(#3b82f6, #8b5cf6);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(#2563eb, #7c3aed);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #8b5cf6 #1f2937;
 }
 
 a {
@@ -41,8 +103,33 @@ a {
 }
 
 ::selection {
-  background:    rgba(34, 211, 238, 0.35);
+  background: var(--brand-glow);
   color: #fff;
+}
+
+.brand-logo-text {
+  font-family: var(--font-display), "Space Grotesk", Arial, Helvetica, sans-serif;
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  line-height: 1;
+}
+
+.brand-meta-text {
+  background: var(--grad-primary);
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.brand-gradient-bg {
+  background: var(--grad-primary);
+}
+
+.brand-gradient-bg:hover {
+  background: linear-gradient(90deg, #c49df9 0%, #a844d4 100%);
 }
 
 @keyframes waiting-progress {

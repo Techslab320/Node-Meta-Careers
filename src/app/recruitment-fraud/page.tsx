@@ -39,7 +39,7 @@ export default function RecruitmentFraudPage() {
               href={siteConfig.mainWebsiteUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-cyan-300 hover:text-cyan-200"
+              className="text-brand-light hover:text-brand-light"
             >
               {siteConfig.mainWebsiteUrl}
             </a>
@@ -50,7 +50,7 @@ export default function RecruitmentFraudPage() {
               For recruitment verification, contact{" "}
               <a
                 href={`mailto:${siteConfig.recruitmentContactEmail}`}
-                className="text-cyan-300 hover:text-cyan-200"
+                className="text-brand-light hover:text-brand-light"
               >
                 {siteConfig.recruitmentContactEmail}
               </a>
@@ -58,7 +58,7 @@ export default function RecruitmentFraudPage() {
             </p>
           ) : (
             <p className="mt-3">
-              Configure <code className="text-cyan-200">RECRUITMENT_CONTACT_EMAIL</code>{" "}
+              Configure <code className="text-brand-light">RECRUITMENT_CONTACT_EMAIL</code>{" "}
               in your environment to display the official recruitment contact address on
               this page.
             </p>

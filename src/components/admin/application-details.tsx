@@ -21,7 +21,7 @@ function DetailField({
           href={href}
           target="_blank"
           rel="noopener noreferrer"
-          className="mt-1 block break-all text-cyan-300 hover:text-cyan-200"
+          className="mt-1 block break-all text-brand-light hover:text-brand-light"
         >
           {value}
         </a>

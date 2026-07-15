@@ -54,7 +54,7 @@ export function AdminJobsTable({ jobs }: { jobs: JobDocument[] }) {
                 <div className="flex flex-wrap gap-2">
                   <Link
                     href={adminPath(`jobs/${job._id}/edit`)}
-                    className="text-cyan-300 hover:text-cyan-200"
+                    className="text-brand-light hover:text-brand-light"
                   >
                     Edit
                   </Link>

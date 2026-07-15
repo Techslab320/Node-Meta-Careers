@@ -3,6 +3,12 @@ import type { NextRequest } from "next/server";
 import { adminBasePath, adminLoginPath, isAdminPagePath } from "@/config/admin";
 import { auth } from "@/lib/auth/auth";
 
+function withPathnameHeader(request: NextRequest, pathname: string) {
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("x-pathname", pathname);
+  return requestHeaders;
+}
+
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -24,16 +30,15 @@ export async function proxy(request: NextRequest) {
     }
   }
 
-  const response = NextResponse.next();
-  response.headers.set("x-pathname", pathname);
-  return response;
+  return NextResponse.next({
+    request: {
+      headers: withPathnameHeader(request, pathname),
+    },
+  });
 }
 
 export const config = {
   matcher: [
-    "/admin-nodemeta-mateoandres/:path*",
-    "/admin-nodemeta-mateoandres",
-    "/interview-room",
-    "/interview-room/:path*",
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|pdf)$).*)",
   ],
 };

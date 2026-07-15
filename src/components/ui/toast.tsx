@@ -31,7 +31,7 @@ export function Toast({
       role="status"
       aria-live="polite"
     >
-      <div className="pointer-events-auto max-w-md rounded-xl border border-cyan-500/30 bg-slate-900 px-5 py-4 text-sm text-cyan-100 shadow-lg shadow-cyan-500/10">
+      <div className="pointer-events-auto max-w-md rounded-xl border border-brand-light/30 bg-slate-900 px-5 py-4 text-sm text-brand-light/90 shadow-lg shadow-brand-light/10">
         {message}
       </div>
     </div>

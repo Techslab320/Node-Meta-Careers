@@ -6,9 +6,10 @@ const contentSecurityPolicy = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  "connect-src 'self' https://challenges.cloudflare.com",
-  "frame-src https://challenges.cloudflare.com",
-  "object-src 'none'",
+  "connect-src 'self' https://challenges.cloudflare.com blob:",
+  "worker-src 'self' blob:",
+  "frame-src 'self' blob: https://challenges.cloudflare.com",
+  "object-src 'self'",
   "base-uri 'self'",
   "form-action 'self'",
   "frame-ancestors 'none'",
@@ -24,13 +25,23 @@ const securityHeaders = [
   { key: "Content-Security-Policy", value: contentSecurityPolicy },
 ];
 
+const pdfEmbedHeaders = [
+  { key: "X-Frame-Options", value: "SAMEORIGIN" },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "Content-Security-Policy", value: "frame-ancestors 'self'" },
+];
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   async headers() {
     return [
       {
-        source: "/(.*)",
+        source: "/:path*",
         headers: securityHeaders,
+      },
+      {
+        source: "/upload/:path*",
+        headers: pdfEmbedHeaders,
       },
     ];
   },

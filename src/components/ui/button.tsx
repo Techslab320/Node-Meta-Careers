@@ -2,9 +2,9 @@ import { cn } from "@/lib/utils";
 
 const variants = {
   primary:
-    "bg-gradient-to-r from-cyan-500 to-emerald-500 text-slate-950 hover:from-cyan-400 hover:to-emerald-400",
+    "brand-gradient-bg text-white hover:opacity-95",
   secondary:
-    "border border-cyan-500/30 bg-slate-900/60 text-cyan-100 hover:border-cyan-400/50 hover:bg-slate-900",
+    "border border-brand-light/30 bg-brand-surface/60 text-brand-light hover:border-brand-light/50 hover:bg-brand-surface",
   ghost: "text-slate-300 hover:bg-slate-800/80 hover:text-white",
   danger:
     "border border-red-500/40 bg-red-500/10 text-red-200 hover:bg-red-500/20",
@@ -32,7 +32,7 @@ export function Button({
   return (
     <button
       className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-lg font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 disabled:cursor-not-allowed disabled:opacity-60",
+        "inline-flex items-center justify-center gap-2 rounded-lg font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-light focus-visible:ring-offset-2 focus-visible:ring-offset-[#080612] disabled:cursor-not-allowed disabled:opacity-60",
         variants[variant],
         sizes[size],
         className,

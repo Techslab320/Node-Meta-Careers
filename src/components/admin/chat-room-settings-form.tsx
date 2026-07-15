@@ -331,7 +331,7 @@ export function ChatRoomSettingsForm({
               aria-checked={settings.hrBotEnabled}
               onClick={() => updateField("hrBotEnabled", !settings.hrBotEnabled)}
               className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors ${
-                settings.hrBotEnabled ? "bg-cyan-500" : "bg-slate-700"
+                settings.hrBotEnabled ? "bg-brand-light" : "bg-slate-700"
               }`}
             >
               <span

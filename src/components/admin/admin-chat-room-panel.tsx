@@ -60,7 +60,7 @@ function HrBotSwitch({
           onToggle();
         }}
         className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-          enabled ? "bg-cyan-500" : "bg-slate-700"
+          enabled ? "bg-brand-light" : "bg-slate-700"
         }`}
       >
         <span
@@ -258,7 +258,7 @@ function AdminHrInterviewerComposer({
       {joined ? (
         <form onSubmit={handleSubmit} className="mt-3 space-y-2">
           {hrBotEnabled ? (
-            <p className="text-xs text-cyan-400/90">
+            <p className="text-xs text-brand-light/90">
               HR bot is active — you can still send manual messages as this interviewer.
             </p>
           ) : null}
@@ -276,7 +276,7 @@ function AdminHrInterviewerComposer({
             placeholder="Type a message..."
             disabled={sending || !interviewer.fullName.trim()}
             rows={3}
-            className="w-full resize-none rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+            className="w-full resize-none rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-brand-light focus:outline-none focus:ring-2 focus:ring-brand-light/30 disabled:cursor-not-allowed disabled:opacity-60"
           />
           <div className="flex items-center gap-2">
             <ChatEmojiPicker

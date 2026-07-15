@@ -263,7 +263,7 @@ export function InterviewRoomClient({ settings }: InterviewRoomClientProps) {
     return (
       <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
         <Card className="w-full max-w-lg">
-          <Logo href={null} className="justify-center" iconClassName="h-11 w-11" textClassName="text-2xl" />
+          <Logo href={null} layout="stacked" className="justify-center" iconClassName="h-11 w-11" textClassName="text-2xl" />
           <h1 className="mt-6 text-center text-2xl font-bold text-white">{settings.roomName}</h1>
           <Alert variant="warning">
             The interview chat room is currently closed. Please check back shortly or contact recruiting.
@@ -328,7 +328,7 @@ export function InterviewRoomClient({ settings }: InterviewRoomClientProps) {
 
       <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
         <Card className="w-full max-w-lg">
-          <Logo href={null} className="justify-center" iconClassName="h-11 w-11" textClassName="text-2xl" />
+          <Logo href={null} layout="stacked" className="justify-center" iconClassName="h-11 w-11" textClassName="text-2xl" />
           <h1 className="mt-6 text-center text-2xl font-bold text-white">{settings.roomName}</h1>
           <p className="mt-2 text-center text-sm text-slate-400">
             {settings.welcomeMessage}{" "}

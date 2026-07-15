@@ -225,7 +225,7 @@ export function ChatMessageBubble({
     <div className={`group flex ${align === "right" ? "justify-end" : "justify-start"}`}>
       <div
         className={`relative max-w-[85%] rounded-2xl px-4 py-2.5 text-sm ${
-          align === "right" ? "bg-cyan-500/20 text-cyan-50" : "bg-slate-800 text-slate-200"
+          align === "right" ? "bg-brand-light/20 text-violet-50" : "bg-slate-800 text-slate-200"
         } ${message.isDeleted ? "opacity-70 italic" : ""}`}
       >
         <div className="mb-1 flex items-start justify-between gap-2">
@@ -249,14 +249,14 @@ export function ChatMessageBubble({
               value={editDraft}
               onChange={(event) => setEditDraft(event.target.value)}
               rows={3}
-              className="w-full resize-none rounded-lg border border-slate-600 bg-slate-950/80 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-500 focus:outline-none"
+              className="w-full resize-none rounded-lg border border-slate-600 bg-slate-950/80 px-2 py-1.5 text-sm text-slate-100 focus:border-brand-light focus:outline-none"
             />
             <div className="flex gap-2">
               <button
                 type="button"
                 disabled={saving}
                 onClick={() => void handleSaveEdit()}
-                className="rounded-md bg-cyan-600 px-2 py-1 text-xs text-white hover:bg-cyan-500 disabled:opacity-60"
+                className="rounded-md bg-brand-dark px-2 py-1 text-xs text-white hover:bg-brand-light disabled:opacity-60"
               >
                 Save
               </button>

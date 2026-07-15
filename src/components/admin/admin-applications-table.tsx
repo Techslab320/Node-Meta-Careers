@@ -145,6 +145,7 @@ export function AdminApplicationsTable({
         <Input
           label="Country"
           name="country"
+          className="font-"
           defaultValue={searchParams.get("country") || ""}
           onChange={(event) => updateParam("country", event.target.value)}
         />
@@ -216,7 +217,7 @@ export function AdminApplicationsTable({
                         <Link
                           href={adminPath(`chat-room/session/${chatRoomByApplicationId[application._id]}`)}
                           onClick={(event) => event.stopPropagation()}
-                          className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/30 bg-slate-900/60 px-3 py-1.5 text-sm text-cyan-100 hover:border-cyan-400/50 hover:bg-slate-900"
+                          className="inline-flex items-center gap-2 rounded-lg border border-brand-light/30 bg-slate-900/60 px-3 py-1.5 text-sm text-brand-light/90 hover:border-brand-light/50 hover:bg-slate-900"
                         >
                           <MessageSquare className="h-4 w-4" aria-hidden />
                           Chat Room

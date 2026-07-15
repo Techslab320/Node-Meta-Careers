@@ -8,4 +8,5 @@ export const mongoCollections = {
   chatRoomSettings: "careers_chat_room_settings",
   chatRoomSessions: "careers_chat_room_sessions",
   chatRoomMessages: "careers_chat_room_messages",
+  assessments: "careers_assessments",
 } as const;
