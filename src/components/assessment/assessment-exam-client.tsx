@@ -14,6 +14,11 @@ import {
   FinanceScenarioPdfOverlay,
   isFinanceInvoiceScenarioQuestion,
 } from "@/components/assessment/assessment-system-error-dialogs";
+import {
+  FinanceMonthlyExpenseTable,
+  isFinanceMonthlyExpenseQuestion,
+} from "@/components/assessment/finance-monthly-expense-table";
+import { getFinanceQuestionMaterial } from "@/components/assessment/finance-question-materials";
 import { AssessmentProgressSidebar } from "@/components/assessment/assessment-progress-sidebar";
 import { AssessmentTimeline } from "@/components/assessment/assessment-timeline";
 import { Alert, Card } from "@/components/ui/card";
@@ -341,6 +346,10 @@ export function AssessmentExamClient({
     jobSlug,
     currentAnswer?.questionNumber ?? 0,
   );
+  const isMonthlyExpenseQuestion = isFinanceMonthlyExpenseQuestion(
+    jobSlug,
+    currentAnswer?.questionNumber ?? 0,
+  );
 
   useEffect(() => {
     setScenarioDialogOpen(false);
@@ -537,6 +546,10 @@ export function AssessmentExamClient({
                 <p className="mt-2 text-xs text-slate-500">
                   {answeredCount} completed · minimum {assessmentMinAnswerLength} characters each
                 </p>
+
+                {isMonthlyExpenseQuestion ? <FinanceMonthlyExpenseTable /> : null}
+
+                {getFinanceQuestionMaterial(currentAnswer.questionNumber)}
 
                 {isInvoiceScenarioQuestion ? (
                   <div className="mt-5 rounded-xl border border-violet-500/20 bg-slate-950/70 p-5">

