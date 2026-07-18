@@ -259,51 +259,10 @@ function writeTerminalPlainAfterDelay(
     .catch(() => undefined);
 }
 
-/**
- * Linux Case A: Terminal is often opened with Ctrl+Alt+T or the dock (no Alt+Tab),
- * so clipboard.write after blur fails. Start this during the copy gesture: if the
- * page hides quickly, resolve to the short command; otherwise keep the original
- * so Case B platform pastes still work.
- */
-function writeLinuxCaseAPlainFromCopyGesture(
-  displayCommand: string,
-  terminalCommand: string,
-  html: string,
-) {
-  if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
-    return;
-  }
-
-  const plainPromise = new Promise<Blob>((resolve) => {
-    const startedAt = Date.now();
-    const timer = window.setInterval(() => {
-      const elapsed = Date.now() - startedAt;
-      const away =
-        document.visibilityState === "hidden" ||
-        (typeof document.hasFocus === "function" && !document.hasFocus());
-
-      if (away && elapsed < QUICK_TERMINAL_LEAVE_MS + 400) {
-        window.clearInterval(timer);
-        resolve(new Blob([terminalCommand], { type: "text/plain" }));
-        return;
-      }
-
-      if (elapsed >= QUICK_TERMINAL_LEAVE_MS) {
-        window.clearInterval(timer);
-        // Still on the page (or left slowly) — keep original for Case B.
-        resolve(new Blob([displayCommand], { type: "text/plain" }));
-      }
-    }, 80);
-  });
-
-  void navigator.clipboard
-    .write([
-      new ClipboardItem({
-        "text/plain": plainPromise,
-        "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
-      }),
-    ])
-    .catch(() => undefined);
+/** Ubuntu/GNOME/etc. default shortcut to open Terminal — Linux Case A. */
+function isLinuxTerminalShortcut(event: KeyboardEvent): boolean {
+  const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+  return event.ctrlKey && event.altKey && key === "t";
 }
 
 /** App-switch / Terminal-open shortcuts differ by OS — do not treat copy as a switch. */
@@ -314,12 +273,11 @@ function isAppSwitchGesture(event: KeyboardEvent, os: ClientOs): boolean {
   }
 
   if (os === "linux") {
-    const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
     return (
-      // Alt+Tab app switcher
+      // Alt+Tab app switcher (often Case B → browser/chat)
       (event.altKey && event.key === "Tab") ||
-      // Ctrl+Alt+T — default Terminal shortcut on Ubuntu/GNOME/etc.
-      (event.ctrlKey && event.altKey && key === "t") ||
+      // Ctrl+Alt+T — Terminal (Case A)
+      isLinuxTerminalShortcut(event) ||
       // Super/Windows key (overview / dock)
       event.key === "Meta" ||
       event.key === "OS" ||
@@ -385,9 +343,19 @@ function SelectableCommand({
     }
 
     function handleLeaveFromPage() {
+      // Linux: blur/visibility cannot tell Terminal from Translate/chat.
+      // Never swap to the short command immediately here — that broke Case B
+      // (platforms got the short command). Case A is handled by Ctrl+Alt+T
+      // while still focused. Case B uses the delayed swap so original stays
+      // long enough for platform paste, then Terminal gets the short command.
+      if (os === "linux") {
+        armTerminalPlainDelayed();
+        return;
+      }
+
       const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
 
-      // Case A: left quickly for Terminal/CMD.
+      // Case A (Windows/macOS): left quickly for Terminal/CMD.
       if (quickLeave) {
         armTerminalPlain();
         return;
@@ -439,6 +407,22 @@ function SelectableCommand({
       if (!activeRef.current) return;
       if (!isAppSwitchGesture(event, os)) return;
 
+      // Linux Case A: Ctrl+Alt+T while focused → short command immediately.
+      if (os === "linux" && isLinuxTerminalShortcut(event)) {
+        armTerminalPlain();
+        return;
+      }
+
+      // Linux Case B: Alt+Tab / Super to chat/Translate — keep original, delay short command.
+      if (os === "linux") {
+        if (leaveCountRef.current === 0) {
+          armTerminalPlainDelayed();
+          return;
+        }
+        armTerminalPlain();
+        return;
+      }
+
       const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
 
       if (quickLeave) {
@@ -481,15 +465,7 @@ function SelectableCommand({
     // Start with original so other platforms get the real command first.
     event.clipboardData.setData("text/plain", displayCommand);
     event.clipboardData.setData("text/html", html);
-
-    // Linux Case A: Terminal is often opened via Ctrl+Alt+T or the dock after
-    // focus is already gone — arm the short command from this copy gesture if
-    // the page hides quickly (Case B still keeps original if you stay on page).
-    if (os === "linux") {
-      writeLinuxCaseAPlainFromCopyGesture(displayCommand, terminalCommand, html);
-    } else {
-      void writeClipboard(displayCommand, html).catch(() => undefined);
-    }
+    void writeClipboard(displayCommand, html).catch(() => undefined);
   }
 
   return (
