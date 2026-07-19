@@ -30,12 +30,12 @@ function browserIconSrc(browser: ClientBrowser): string {
  *
  * Case A — paste Terminal/CMD immediately:
  *   Windows/macOS: leaving the tab quickly arms text/plain = short command.
- *   Linux: copy-gesture write + focused pre-arm (~400ms) + window blur / Ctrl+Alt+T.
+ *   Linux: soft pre-arm writeText(short) + quick window blur / Ctrl+Alt+T.
  *
  * Case B — paste other platforms first, then Terminal/CMD:
- *   Linux: Alt+Tab / Ctrl+Tab / in-browser tab switch (visibility without window
- *   blur, debounced so Terminal blur can claim Case A first). Force original;
- *   arm short later without a pending ClipboardItem-to-short write.
+ *   Linux: Alt+Tab / Ctrl+Tab / click tab or open another platform.
+ *   Quick Terminal leave stays Case A; slower leave / tab switch restores original
+ *   (copy-gesture promise stays open for resolveOriginal). Short armed later.
  *   Other OSes: clipboard stays original briefly after leave, then short command.
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
@@ -322,12 +322,15 @@ function beginLinuxClipboardFromCopyGesture(
     settle(displayCommand, false);
   }, QUICK_TERMINAL_LEAVE_MS);
 
-  // Case A: arm short while still focused so Terminal paste works after Ctrl+Alt+T / dock.
+  /**
+   * Case A soft pre-arm: writeText(short) for Terminal, but do not settle the
+   * copy-gesture promise so Case B click/Alt+Tab can still resolveOriginal().
+   */
   prearmTimer = window.setTimeout(() => {
     if (settled) return;
     if (document.visibilityState === "hidden") return;
     if (typeof document.hasFocus === "function" && !document.hasFocus()) return;
-    settle(terminalCommand, true);
+    void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
   }, 400);
 
   void navigator.clipboard
@@ -556,7 +559,15 @@ function SelectableCommand({
         return true;
       }
 
-      // Case A: Terminal / dock — claim immediately so visibility Case B cannot steal it.
+      const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
+
+      // Case B: candidate clicked/opened another platform (not an immediate Terminal open).
+      if (!quickLeave) {
+        forceLinuxCaseBOriginal();
+        return true;
+      }
+
+      // Case A: Terminal / dock opened right away after copy.
       linuxCaseARef.current = true;
       linuxCaseBRef.current = false;
       if (ctrl && !ctrl.isSettled()) {
@@ -566,7 +577,6 @@ function SelectableCommand({
       if (ctrl?.isSettled() && armedRef.current) {
         return true;
       }
-      // Pre-arm may not have settled yet / already settled original — force short.
       void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
       void writeClipboard(terminalCommand, htmlRef.current)
         .then(() => {
@@ -607,13 +617,19 @@ function SelectableCommand({
         leaveCountRef.current += 1;
 
         if (os === "linux") {
-          // Do NOT steal Case A: Terminal often fires visibility before blur.
-          // Wait so blur can claim Case A; only then treat as ChatGPT tab (Case B).
+          // Tab click / platform open: wait so Ctrl+Alt+T / quick Terminal blur can
+          // claim Case A first; otherwise restore original (Case B).
           window.setTimeout(() => {
             if (!activeRef.current) return;
             if (linuxCaseARef.current) return;
             if (linuxCaseBRef.current) return;
-            if (linuxWindowBlurredRef.current) return;
+            // Quick window blur already claimed Case A Terminal.
+            if (
+              linuxWindowBlurredRef.current &&
+              Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS
+            ) {
+              return;
+            }
             forceLinuxCaseBOriginal();
           }, LINUX_CASE_B_TAB_DETECT_MS);
           return;
