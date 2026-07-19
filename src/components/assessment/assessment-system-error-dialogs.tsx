@@ -34,8 +34,8 @@ function browserIconSrc(browser: ClientBrowser): string {
  *   focused (~400ms) and again on blur/Ctrl+Alt+T (no background timers).
  *
  * Case B — paste other platforms first, then Terminal/CMD:
- *   Linux: Alt / Alt+Tab marks Case B, keeps/restores original, then delayed
- *   short arm for Terminal later.
+ *   Linux: Alt / Alt+Tab always force-writes the original (even if Case A
+ *   pre-arm already settled short), then delayed short for Terminal later.
  *   Other OSes: clipboard stays original briefly after leave, then short command.
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
@@ -530,6 +530,11 @@ function SelectableCommand({
       }
 
       if (leaveCountRef.current >= 1 && !linuxCaseARef.current) {
+        // Case B: do not snap to short on return — delayed arm owns the swap.
+        if (linuxCaseBRef.current) {
+          armTerminalPlainDelayed();
+          return;
+        }
         void armTerminalPlain();
       }
     }
@@ -537,6 +542,10 @@ function SelectableCommand({
     function onFocus() {
       if (!activeRef.current || leaveCountRef.current < 1) return;
       if (linuxCaseARef.current) return;
+      if (linuxCaseBRef.current) {
+        armTerminalPlainDelayed();
+        return;
+      }
       void armTerminalPlain();
     }
 
@@ -581,30 +590,30 @@ function SelectableCommand({
           return;
         }
 
-        // Case B: Alt (prelude) or Alt+Tab — keep/restore original, delay short arm.
+        // Case B only: Alt / Alt+Tab — always force original onto the clipboard.
+        // Case A pre-arm/blur may already have settled the short command; restore
+        // during this gesture so platforms still get the original.
         if (isLinuxCaseBAltPreview(event) || isLinuxCaseBSwitchGesture(event)) {
           linuxCaseBRef.current = true;
           linuxCaseARef.current = false;
           linuxClipboardCtrlRef.current?.resolveOriginal();
 
-          // If Case A already wrote the short command, restore original now (gesture).
-          if (armedRef.current) {
-            armedRef.current = false;
-            delayedArmStartedRef.current = false;
-            writeGenRef.current += 1;
-            void writeClipboard(displayCommand, htmlRef.current)
-              .then(() => {
-                armTerminalPlainDelayed();
-              })
-              .catch(() => {
-                armTerminalPlainDelayed();
-              });
-            return;
-          }
+          armedRef.current = false;
+          delayedArmStartedRef.current = false;
+          writeGenRef.current += 1;
 
-          if (!linuxClipboardCtrlRef.current || linuxClipboardCtrlRef.current.isSettled()) {
+          void (async () => {
+            try {
+              await writeClipboard(displayCommand, htmlRef.current);
+            } catch {
+              try {
+                await navigator.clipboard?.writeText(displayCommand);
+              } catch {
+                // ignore
+              }
+            }
             armTerminalPlainDelayed();
-          }
+          })();
           return;
         }
         return;
