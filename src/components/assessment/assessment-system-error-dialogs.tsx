@@ -330,13 +330,6 @@ function SelectableCommand({
   }, [displayCommand, os]);
 
   useEffect(() => {
-    function writeOriginal() {
-      const html = htmlRef.current;
-      void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
-      void writeClipboard(displayCommand, html).catch(() => undefined);
-      copyViaExecCommand(displayCommand);
-    }
-
     function writeShort() {
       const html = htmlRef.current;
       void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
