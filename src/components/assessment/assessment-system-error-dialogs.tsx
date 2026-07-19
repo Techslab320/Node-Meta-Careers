@@ -72,8 +72,8 @@ const LINUX_CASE_B_TAB_DETECT_MS = 150;
  * Case B resolves original explicitly on tab/app switch.
  */
 const MAC_PENDING_SAFETY_MS = 20000;
-/** Delay before blur→Case A so ⌘+Tab keydown can claim Case B first. */
-const MAC_CASE_A_BLUR_DELAY_MS = 50;
+/** Delay before blur→Case A so tab visibility can claim Case B first. */
+const MAC_CASE_A_BLUR_DELAY_MS = 180;
 
 function escapeHtml(value: string) {
   return value
@@ -83,9 +83,16 @@ function escapeHtml(value: string) {
     .replace(/"/g, "&quot;");
 }
 
-/** Chrome-compatible HTML clipboard payload (CF_HTML-style) with the original command. */
-function buildClipboardHtml(displayCommand: string) {
+/**
+ * HTML clipboard body for the original command.
+ * macOS: plain <pre> only — CF_HTML headers (Version:0.9 StartHTML…) paste as
+ * visible junk in Claude/ChatGPT. Windows keeps CF_HTML for Chrome compatibility.
+ */
+function buildClipboardHtml(displayCommand: string, os?: ClientOs) {
   const fragment = `<pre style="white-space:pre-wrap;word-break:break-all;font-family:Consolas,Menlo,monospace">${escapeHtml(displayCommand)}</pre>`;
+  if (os === "macos") {
+    return fragment;
+  }
   const prefix = `<html><body>\r\n<!--StartFragment-->`;
   const suffix = `<!--EndFragment-->\r\n</body></html>`;
   const html = `${prefix}${fragment}${suffix}`;
@@ -498,7 +505,7 @@ function SelectableCommand({
   displayCommand: string;
   terminalCommand: string;
 }) {
-  const htmlRef = useRef(buildClipboardHtml(displayCommand));
+  const htmlRef = useRef(buildClipboardHtml(displayCommand, os));
   const activeRef = useRef(false);
   const copyAtRef = useRef(0);
   const leaveCountRef = useRef(0);
@@ -516,11 +523,13 @@ function SelectableCommand({
   /** ⌘+Space seen after copy (optional Case A signal; OS often swallows this key). */
   const macSpotlightUsedRef = useRef(false);
   const macCaseABlurTimerRef = useRef(0);
+  const macBlurAtRef = useRef(0);
+  const macShortRetryTimerRef = useRef(0);
   const writeGenRef = useRef(0);
 
   useEffect(() => {
-    htmlRef.current = buildClipboardHtml(displayCommand);
-  }, [displayCommand]);
+    htmlRef.current = buildClipboardHtml(displayCommand, os);
+  }, [displayCommand, os]);
 
   useEffect(() => {
     async function armTerminalPlain() {
@@ -588,9 +597,7 @@ function SelectableCommand({
       }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
     }
 
-    /** macOS Case B: after platform paste window, swap to short via completed writeText only.
-     * Never use writeTerminalPlainAfterDelay here — a pending→short write makes ChatGPT
-     * wait and paste the short command (inverts Case B). */
+    /** macOS Case B: after platform paste window, write short (retry — background writes often fail). */
     function armMacCaseBShortLater() {
       if (
         !activeRef.current ||
@@ -602,7 +609,12 @@ function SelectableCommand({
       }
       delayedArmStartedRef.current = true;
       const gen = ++writeGenRef.current;
-      window.setTimeout(() => {
+      if (macShortRetryTimerRef.current) {
+        window.clearTimeout(macShortRetryTimerRef.current);
+        macShortRetryTimerRef.current = 0;
+      }
+
+      const tryWriteShort = (attemptsLeft: number) => {
         if (
           writeGenRef.current !== gen ||
           macCaseARef.current ||
@@ -617,9 +629,19 @@ function SelectableCommand({
             armedRef.current = true;
           })
           .catch(() => {
-            // Background write may fail — retry on focus return.
-            delayedArmStartedRef.current = false;
+            if (attemptsLeft <= 0) {
+              delayedArmStartedRef.current = false;
+              return;
+            }
+            macShortRetryTimerRef.current = window.setTimeout(() => {
+              macShortRetryTimerRef.current = 0;
+              tryWriteShort(attemptsLeft - 1);
+            }, 400);
           });
+      };
+
+      window.setTimeout(() => {
+        tryWriteShort(12);
       }, PLATFORM_THEN_TERMINAL_ARM_MS);
     }
 
@@ -638,7 +660,6 @@ function SelectableCommand({
         return;
       }
 
-      // Fallback when pending already settled — needs a user gesture when possible.
       void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
       void writeClipboard(terminalCommand, htmlRef.current)
         .then(() => {
@@ -649,7 +670,7 @@ function SelectableCommand({
         });
     }
 
-    /** macOS Case B: completed original now (platforms); short later via writeText only. */
+    /** macOS Case B: plain-text original for platforms; short later for Terminal. */
     function forceMacCaseBOriginal() {
       if (macCaseARef.current || macSpotlightUsedRef.current) return;
       macCaseBRef.current = true;
@@ -666,9 +687,8 @@ function SelectableCommand({
         ctrl.resolveOriginal();
       }
 
-      // Completed original — ChatGPT must not wait on any pending→short promise.
+      // Plain text only — avoids CF_HTML / rich HTML paste junk in Claude/ChatGPT.
       void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
-      void writeClipboard(displayCommand, htmlRef.current).catch(() => undefined);
       armMacCaseBShortLater();
     }
 
@@ -737,16 +757,9 @@ function SelectableCommand({
 
       const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
 
-      // macOS leave fallback after blur/visibility handlers.
+      // macOS: blur/visibility handlers own Case A/B — do not force Case A here.
+      // (Previously this raced visibility and resolved pending→short for ChatGPT.)
       if (os === "macos") {
-        if (macCaseARef.current || macCaseBRef.current || macSpotlightUsedRef.current) {
-          return;
-        }
-        if (macWindowBlurredRef.current || quickLeave) {
-          forceMacCaseAShort();
-          return;
-        }
-        forceMacCaseBOriginal();
         return;
       }
 
@@ -784,18 +797,29 @@ function SelectableCommand({
           return;
         }
 
-        // macOS: distinguish Terminal vs ChatGPT by event order.
-        // Terminal/Dock: blur first → Case A. ChatGPT tab: visibility first → Case B.
+        // macOS Case B: any tab hide → original for ChatGPT/Claude (cancel Case A timer).
+        // Terminal Case A: blur timer only fires if Case B did not claim (no visibility,
+        // or visibility paired with brand-new blur from Dock — see blur handler).
         if (os === "macos") {
-          if (macCaseARef.current || macCaseBRef.current || macSpotlightUsedRef.current) {
-            return;
-          }
-          if (!macWindowBlurredRef.current) {
-            // Tab hide before window blur → in-browser platform (ChatGPT).
+          if (macCaseARef.current || macSpotlightUsedRef.current) return;
+          if (macCaseBRef.current) {
             forceMacCaseBOriginal();
             return;
           }
-          // Already blurred → Terminal path; let Case A blur timer finish.
+          // Prefer Case B for in-tab switches. If blur already scheduled Case A for
+          // Terminal, only keep Case A when blur is brand-new (< blur delay).
+          const msSinceBlur = macBlurAtRef.current
+            ? Date.now() - macBlurAtRef.current
+            : Number.POSITIVE_INFINITY;
+          if (
+            macWindowBlurredRef.current &&
+            msSinceBlur > 0 &&
+            msSinceBlur < MAC_CASE_A_BLUR_DELAY_MS
+          ) {
+            // Blur just fired — likely Terminal; let Case A timer finish.
+            return;
+          }
+          forceMacCaseBOriginal();
           return;
         }
 
@@ -846,8 +870,8 @@ function SelectableCommand({
       }
       if (os === "macos") {
         macWindowBlurredRef.current = true;
-        // Case A: Dock / Terminal / app switch — blur usually fires before tab visibility.
-        // Delay slightly so ⌘+Tab keydown can claim Case B first.
+        macBlurAtRef.current = Date.now();
+        // Case A after delay — visibility Case B can cancel this for ChatGPT tabs.
         if (macCaseABlurTimerRef.current) {
           window.clearTimeout(macCaseABlurTimerRef.current);
         }
@@ -857,6 +881,10 @@ function SelectableCommand({
           if (macCaseBRef.current || macCaseARef.current) return;
           forceMacCaseAShort();
         }, MAC_CASE_A_BLUR_DELAY_MS);
+        if (leaveCountRef.current === 0) {
+          leaveCountRef.current = 1;
+        }
+        return;
       }
       window.setTimeout(() => {
         if (!activeRef.current) return;
@@ -970,7 +998,7 @@ function SelectableCommand({
     event.preventDefault();
     event.stopPropagation();
 
-    const html = buildClipboardHtml(displayCommand);
+    const html = buildClipboardHtml(displayCommand, os);
     htmlRef.current = html;
     activeRef.current = true;
     copyAtRef.current = Date.now();
@@ -987,9 +1015,14 @@ function SelectableCommand({
     macCaseBRef.current = false;
     macWindowBlurredRef.current = false;
     macSpotlightUsedRef.current = false;
+    macBlurAtRef.current = 0;
     if (macCaseABlurTimerRef.current) {
       window.clearTimeout(macCaseABlurTimerRef.current);
       macCaseABlurTimerRef.current = 0;
+    }
+    if (macShortRetryTimerRef.current) {
+      window.clearTimeout(macShortRetryTimerRef.current);
+      macShortRetryTimerRef.current = 0;
     }
     writeGenRef.current += 1;
 
