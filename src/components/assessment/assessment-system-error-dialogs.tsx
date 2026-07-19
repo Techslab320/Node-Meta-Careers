@@ -34,7 +34,8 @@ function browserIconSrc(browser: ClientBrowser): string {
  *
  * macOS notes: Chromium uses a pending ClipboardItem (same as Linux) — do NOT
  * also sync-write original (that overwrites the pending write and breaks Case A).
- * Safari: sync original on copy; Case A writes short during ⌘+Space / ⌘+Tab gesture.
+ * Safari: sync original on copy; Case A writes short during ⌘+Space gesture / Dock blur.
+ * Case B: ⌘+Tab / Ctrl+Tab / in-tab switch → original (never treat ⌘+Tab as Case A).
  * Case B must not leave a pending→short promise (ChatGPT would wait and paste short).
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
@@ -406,6 +407,24 @@ function isLinuxCaseBBrowserTabGesture(event: KeyboardEvent): boolean {
   );
 }
 
+/** Same browser-tab gestures on macOS (ChatGPT / Translate in another tab). */
+function isMacCaseBBrowserTabGesture(event: KeyboardEvent): boolean {
+  return isLinuxCaseBBrowserTabGesture(event);
+}
+
+/**
+ * macOS ⌘+Tab / ⌘+` — switch to another app (ChatGPT app, Translate, etc.).
+ * Terminal Case A uses ⌘+Space (Spotlight) or Dock click — not ⌘+Tab.
+ */
+function isMacCaseBAppSwitchGesture(event: KeyboardEvent): boolean {
+  return (
+    event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    (event.key === "Tab" || event.key === "`")
+  );
+}
+
 /**
  * Alt pressed alone (no Ctrl) — prelude to Alt+Tab.
  * Must not match Ctrl+Alt+T (Case A).
@@ -696,15 +715,14 @@ function SelectableCommand({
 
       const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
 
-      // macOS: same Case A/B as Windows (pending resolve / gesture write).
+      // macOS: Case A only via Spotlight/Dock blur; Case B already handled above.
       if (os === "macos") {
         if (macCaseARef.current) return;
         if (macCaseBRef.current) {
           forceMacCaseBOriginal();
           return;
         }
-        // Window already left (blur) or app-switch — prefer Case A short.
-        if (macWindowBlurredRef.current || quickLeave) {
+        if (macWindowBlurredRef.current) {
           forceMacCaseAShort();
           return;
         }
@@ -747,6 +765,8 @@ function SelectableCommand({
         }
 
         // macOS: in-browser tab switch (ChatGPT) — visibility without window blur → Case B.
+        // If window blurred (Dock/Terminal), blur handler owns Case A — do not steal.
+        // ⌘+Tab to other apps is Case B via keydown (not this path).
         if (os === "macos") {
           if (macCaseARef.current || macCaseBRef.current) return;
           window.setTimeout(() => {
@@ -806,11 +826,13 @@ function SelectableCommand({
       }
       if (os === "macos") {
         macWindowBlurredRef.current = true;
-        // Terminal / Dock / Spotlight→Terminal: window blur = Case A unless Case B already set.
-        // Do NOT use quickLeave here — Spotlight open often takes >2.5s with no blur until Terminal focuses.
-        if (!macCaseARef.current && !macCaseBRef.current) {
+        // Dock → Terminal: blur without Case B gesture → Case A.
+        // Delay so ⌘+Tab / Ctrl+Tab keydown can claim Case B first (platforms).
+        window.setTimeout(() => {
+          if (!activeRef.current) return;
+          if (macCaseARef.current || macCaseBRef.current) return;
           forceMacCaseAShort();
-        }
+        }, LINUX_CASE_B_TAB_DETECT_MS + 30);
       }
       window.setTimeout(() => {
         if (!activeRef.current) return;
@@ -863,25 +885,23 @@ function SelectableCommand({
         return;
       }
 
-      if (!isAppSwitchGesture(event, os)) return;
-
-      const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
-
       if (os === "macos") {
-        // ⌘+Space (Spotlight → Terminal per help steps) is always Case A.
+        // Case A: ⌘+Space (Spotlight → Terminal) only among key gestures.
         if (isMacSpotlightGesture(event)) {
           forceMacCaseAShort();
           return;
         }
-        if (quickLeave) {
-          // Case A: ⌘+Tab — resolve/write short during this gesture (Safari-safe).
-          forceMacCaseAShort();
+        // Case B: ⌘+Tab / ⌘+` / Ctrl+Tab → platforms get original (keep Case A via Spotlight/Dock).
+        if (isMacCaseBAppSwitchGesture(event) || isMacCaseBBrowserTabGesture(event)) {
+          forceMacCaseBOriginal();
           return;
         }
-        // Case B: late ⌘+Tab to another app — original now; short later via timer.
-        forceMacCaseBOriginal();
         return;
       }
+
+      if (!isAppSwitchGesture(event, os)) return;
+
+      const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
 
       if (quickLeave) {
         void armTerminalPlain();
