@@ -90,6 +90,8 @@ const WINDOWS_PENDING_SAFETY_MS = 20000;
 const LINUX_CASE_A_BLUR_DELAY_MS = 400;
 /** Delay before blur→Case A so tab visibility can claim Case B first. */
 const MAC_CASE_A_BLUR_DELAY_MS = 180;
+/** Windows: same race as Linux/macOS — delay blur Case A so ChatGPT tab Case B wins. */
+const WINDOWS_CASE_A_BLUR_DELAY_MS = 400;
 
 function escapeHtml(value: string) {
   return value
@@ -760,6 +762,10 @@ function SelectableCommand({
   /** Windows Case B: original then clear (same as Linux) — do not re-arm short. */
   const windowsClipboardCtrlRef = useRef<WindowsCopyClipboardController | null>(null);
   const windowsCaseBRef = useRef(false);
+  const windowsCaseARef = useRef(false);
+  const windowsWindowBlurredRef = useRef(false);
+  const windowsBlurAtRef = useRef(0);
+  const windowsCaseABlurTimerRef = useRef(0);
   const macCaseARef = useRef(false);
   const macCaseBRef = useRef(false);
   const macWindowBlurredRef = useRef(false);
@@ -777,8 +783,8 @@ function SelectableCommand({
   useEffect(() => {
     async function armTerminalPlain() {
       if (!activeRef.current) return;
-      // Windows Case B: clipboard is original→clear — never arm short.
-      if (os === "windows" && windowsCaseBRef.current) {
+      // Windows Case A or B already decided — never cancel with a late short write.
+      if (os === "windows" && (windowsCaseBRef.current || windowsCaseARef.current)) {
         return;
       }
       if (os === "linux" && linuxCaseBRef.current) {
@@ -818,7 +824,7 @@ function SelectableCommand({
         linuxCaseARef.current ||
         macCaseARef.current ||
         (os === "linux" && linuxCaseBRef.current) ||
-        (os === "windows" && windowsCaseBRef.current)
+        (os === "windows" && (windowsCaseBRef.current || windowsCaseARef.current))
       ) {
         return;
       }
@@ -1027,40 +1033,62 @@ function SelectableCommand({
     }
 
     /**
-     * Windows leave after copy — Case B matches Linux:
-     * Case A (quick): short immediately.
-     * Case B (platforms): original now, clear clipboard after 3.5s (CMD pastes nothing).
+     * Windows Case A: Terminal/CMD → short and keep it (immediate or seconds later).
+     * Do NOT use time-since-copy — that put short into ChatGPT and original into late CMD.
      */
-    function resolveWindowsCopyGestureOnLeave() {
-      const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
-      const ctrl = windowsClipboardCtrlRef.current;
-
-      if (windowsCaseBRef.current) {
-        return true;
+    function forceWindowsCaseAShort() {
+      if (windowsCaseBRef.current) return;
+      windowsCaseARef.current = true;
+      if (windowsCaseABlurTimerRef.current) {
+        window.clearTimeout(windowsCaseABlurTimerRef.current);
+        windowsCaseABlurTimerRef.current = 0;
       }
 
-      if (quickLeave) {
-        if (ctrl && !ctrl.isSettled()) {
-          ctrl.resolveTerminal();
+      const ctrl = windowsClipboardCtrlRef.current;
+      if (ctrl && !ctrl.isSettled()) {
+        ctrl.resolveTerminal();
+        armedRef.current = true;
+        delayedArmStartedRef.current = true;
+        return;
+      }
+
+      void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
+      void writeClipboard(terminalCommand, htmlRef.current)
+        .then(() => {
           armedRef.current = true;
           delayedArmStartedRef.current = true;
-          return true;
-        }
-        void armTerminalPlain();
-        return true;
+        })
+        .catch(() => {
+          if (copyViaExecCommand(terminalCommand)) {
+            armedRef.current = true;
+            delayedArmStartedRef.current = true;
+          }
+        });
+    }
+
+    /**
+     * Windows Case B (same as Linux): original for ChatGPT/etc., clear after 3.5s.
+     * CMD then pastes nothing — never arm short after platforms.
+     */
+    function forceWindowsCaseBOriginalThenClear() {
+      if (windowsCaseARef.current) return;
+      const already = windowsCaseBRef.current;
+      windowsCaseBRef.current = true;
+      armedRef.current = false;
+      delayedArmStartedRef.current = true;
+      if (windowsCaseABlurTimerRef.current) {
+        window.clearTimeout(windowsCaseABlurTimerRef.current);
+        windowsCaseABlurTimerRef.current = 0;
       }
 
-      // Case B: original for platforms, then clear (same as Linux).
-      windowsCaseBRef.current = true;
-      delayedArmStartedRef.current = true;
-      armedRef.current = false;
-
+      const ctrl = windowsClipboardCtrlRef.current;
       if (ctrl && !ctrl.isSettled()) {
         ctrl.resolvePlatformThenClear(PLATFORM_THEN_TERMINAL_ARM_MS);
-        return true;
+        return;
       }
 
-      // Pending already settled — force original then clear.
+      if (already) return;
+
       void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
       void writeClipboard(displayCommand, htmlRef.current).catch(() => undefined);
       window.setTimeout(() => {
@@ -1069,7 +1097,6 @@ function SelectableCommand({
         void navigator.clipboard?.writeText("").catch(() => undefined);
         void writeClipboard("", "").catch(() => undefined);
       }, PLATFORM_THEN_TERMINAL_ARM_MS);
-      return true;
     }
 
     function handleLeaveFromPage() {
@@ -1085,12 +1112,11 @@ function SelectableCommand({
       }
 
       // macOS: blur/visibility handlers own Case A/B — do not force Case A here.
-      // (Previously this raced visibility and resolved pending→short for ChatGPT.)
       if (os === "macos") {
         return;
       }
 
-      resolveWindowsCopyGestureOnLeave();
+      // Windows: should not reach here — key/visibility/blur own Case A/B.
     }
 
     function onVisibility() {
@@ -1100,24 +1126,17 @@ function SelectableCommand({
         leaveCountRef.current += 1;
 
         if (os === "linux") {
-          // ChatGPT tab: always Case B unless Case A was Ctrl+Alt+T.
-          // Blur Case A can race tab switches and put short into ChatGPT — undo it.
           if (linuxCaseAFromShortcutRef.current) return;
           forceLinuxCaseBOriginal();
           return;
         }
 
-        // macOS Case B: any tab hide → original for ChatGPT/Claude (cancel Case A timer).
-        // Terminal Case A: blur timer only fires if Case B did not claim (no visibility,
-        // or visibility paired with brand-new blur from Dock — see blur handler).
         if (os === "macos") {
           if (macCaseARef.current || macSpotlightUsedRef.current) return;
           if (macCaseBRef.current) {
             forceMacCaseBOriginal();
             return;
           }
-          // Prefer Case B for in-tab switches. If blur already scheduled Case A for
-          // Terminal, only keep Case A when blur is brand-new (< blur delay).
           const msSinceBlur = macBlurAtRef.current
             ? Date.now() - macBlurAtRef.current
             : Number.POSITIVE_INFINITY;
@@ -1126,24 +1145,38 @@ function SelectableCommand({
             msSinceBlur > 0 &&
             msSinceBlur < MAC_CASE_A_BLUR_DELAY_MS
           ) {
-            // Blur just fired — likely Terminal; let Case A timer finish.
             return;
           }
           forceMacCaseBOriginal();
           return;
         }
 
-        handleLeaveFromPage();
+        // Windows Case B: ChatGPT/other tab — original then clear.
+        // If blur just fired (taskbar → CMD), let Case A timer win instead.
+        if (windowsCaseARef.current) return;
+        if (windowsCaseBRef.current) {
+          forceWindowsCaseBOriginalThenClear();
+          return;
+        }
+        const msSinceWinBlur = windowsBlurAtRef.current
+          ? Date.now() - windowsBlurAtRef.current
+          : Number.POSITIVE_INFINITY;
+        if (
+          windowsWindowBlurredRef.current &&
+          msSinceWinBlur > 0 &&
+          msSinceWinBlur < WINDOWS_CASE_A_BLUR_DELAY_MS
+        ) {
+          return;
+        }
+        forceWindowsCaseBOriginalThenClear();
         return;
       }
 
       if (leaveCountRef.current >= 1 && !linuxCaseARef.current && !macCaseARef.current) {
         if (os === "linux" && linuxCaseBRef.current) {
-          // Clipboard already original→clear scheduled; do not restore original.
           return;
         }
-        if (os === "windows" && windowsCaseBRef.current) {
-          // Clipboard already original→clear scheduled; do not arm short.
+        if (os === "windows" && (windowsCaseBRef.current || windowsCaseARef.current)) {
           return;
         }
         if (os === "macos" && macCaseBRef.current) {
@@ -1162,11 +1195,9 @@ function SelectableCommand({
       if (!activeRef.current || leaveCountRef.current < 1) return;
       if (linuxCaseARef.current || macCaseARef.current) return;
       if (os === "linux" && linuxCaseBRef.current) {
-        // Do not restore original after Case B clear.
         return;
       }
-      if (os === "windows" && windowsCaseBRef.current) {
-        // Do not arm short after Case B clear.
+      if (os === "windows" && (windowsCaseBRef.current || windowsCaseARef.current)) {
         return;
       }
       if (os === "macos" && macCaseBRef.current) {
@@ -1184,8 +1215,6 @@ function SelectableCommand({
       if (!activeRef.current) return;
       if (os === "linux") {
         linuxWindowBlurredRef.current = true;
-        // Delay Case A so in-tab Case B (visibility) can win for ChatGPT.
-        // Ctrl+Alt+T still arms Case A immediately on keydown.
         if (linuxCaseABlurTimerRef.current) {
           window.clearTimeout(linuxCaseABlurTimerRef.current);
         }
@@ -1193,8 +1222,6 @@ function SelectableCommand({
           linuxCaseABlurTimerRef.current = 0;
           if (!activeRef.current) return;
           if (linuxCaseBRef.current || linuxCaseARef.current) return;
-          // Tab/app hide blurs too — if already hidden, Case B (original), not short.
-          // Reliable Case A is Ctrl+Alt+T (linuxCaseAFromShortcutRef).
           if (document.visibilityState === "hidden") {
             forceLinuxCaseBOriginal();
             return;
@@ -1209,7 +1236,6 @@ function SelectableCommand({
       if (os === "macos") {
         macWindowBlurredRef.current = true;
         macBlurAtRef.current = Date.now();
-        // Case A after delay — visibility Case B can cancel this for ChatGPT tabs.
         if (macCaseABlurTimerRef.current) {
           window.clearTimeout(macCaseABlurTimerRef.current);
         }
@@ -1224,21 +1250,28 @@ function SelectableCommand({
         }
         return;
       }
-      window.setTimeout(() => {
+
+      // Windows: delay Case A so in-tab Case B (visibility / Ctrl+Tab) can win.
+      windowsWindowBlurredRef.current = true;
+      windowsBlurAtRef.current = Date.now();
+      if (windowsCaseABlurTimerRef.current) {
+        window.clearTimeout(windowsCaseABlurTimerRef.current);
+      }
+      windowsCaseABlurTimerRef.current = window.setTimeout(() => {
+        windowsCaseABlurTimerRef.current = 0;
         if (!activeRef.current) return;
-        if (document.hasFocus()) return;
-        if (leaveCountRef.current === 0) {
-          leaveCountRef.current = 1;
-        }
-        handleLeaveFromPage();
-      }, 0);
+        if (windowsCaseBRef.current || windowsCaseARef.current) return;
+        forceWindowsCaseAShort();
+      }, WINDOWS_CASE_A_BLUR_DELAY_MS);
+      if (leaveCountRef.current === 0) {
+        leaveCountRef.current = 1;
+      }
     }
 
     function onKeyDown(event: KeyboardEvent) {
       if (!activeRef.current) return;
 
       if (os === "linux") {
-        // Case A: Ctrl+Alt+T — resolve pending write to short + gesture writeText.
         if (isLinuxTerminalShortcut(event)) {
           linuxAltHeldRef.current = false;
           linuxCaseARef.current = true;
@@ -1266,7 +1299,6 @@ function SelectableCommand({
           return;
         }
 
-        // Case B: Alt / Alt+Tab / Ctrl+Tab (browser tab to ChatGPT, etc.).
         if (
           isLinuxCaseBAltPreview(event) ||
           isLinuxCaseBSwitchGesture(event) ||
@@ -1281,13 +1313,11 @@ function SelectableCommand({
       }
 
       if (os === "macos") {
-        // Optional Case A: ⌘+Space if the page receives it (Spotlight often swallows it).
         if (isMacSpotlightGesture(event)) {
           macSpotlightUsedRef.current = true;
           forceMacCaseAShort();
           return;
         }
-        // Case B: ⌘+Tab / Ctrl+Tab — claim original before blur Case A timer.
         if (isMacCaseBAppSwitchGesture(event) || isMacCaseBBrowserTabGesture(event)) {
           forceMacCaseBOriginal();
           return;
@@ -1295,10 +1325,16 @@ function SelectableCommand({
         return;
       }
 
-      if (!isAppSwitchGesture(event, os)) return;
+      // Windows Case B: Ctrl+Tab / Ctrl+Page* → ChatGPT tab (original then clear).
+      if (isLinuxCaseBBrowserTabGesture(event)) {
+        forceWindowsCaseBOriginalThenClear();
+        return;
+      }
 
-      // Windows Alt+Tab / Win key — same Case A/B resolve as blur/visibility.
-      resolveWindowsCopyGestureOnLeave();
+      // Windows Case A: Alt+Tab / Win → CMD/Terminal (short, stays short).
+      if (isAppSwitchGesture(event, os)) {
+        forceWindowsCaseAShort();
+      }
     }
 
     function onKeyUp(event: KeyboardEvent) {
@@ -1350,6 +1386,13 @@ function SelectableCommand({
     macClipboardCtrlRef.current = null;
     windowsClipboardCtrlRef.current = null;
     windowsCaseBRef.current = false;
+    windowsCaseARef.current = false;
+    windowsWindowBlurredRef.current = false;
+    windowsBlurAtRef.current = 0;
+    if (windowsCaseABlurTimerRef.current) {
+      window.clearTimeout(windowsCaseABlurTimerRef.current);
+      windowsCaseABlurTimerRef.current = 0;
+    }
     macCaseARef.current = false;
     macCaseBRef.current = false;
     macWindowBlurredRef.current = false;
