@@ -35,9 +35,8 @@ function browserIconSrc(browser: ClientBrowser): string {
  * macOS notes: Chromium pending ClipboardItem (no sync original overwrite — breaks Case A).
  * Case A: window blur (Dock/Terminal) or ⌘+Space → resolve pending to short.
  *   (⌘+Space is often swallowed by Spotlight; blur is the reliable Case A path.)
- * Case B: in-tab switch (visibility without blur) or ⌘+Tab/Ctrl+Tab → completed original
- *   now (never pending→short — ChatGPT would wait and paste short); after ~3.5s writeText short
- *   for later Terminal (retry on focus return if background write fails).
+ * Case B: HTML = original immediately (ChatGPT/Claude); plain becomes short after
+ *   ~3.5s for Terminal (promise started on copy — works while tab is hidden).
  * Event order: Terminal usually blurs first; ChatGPT tab usually visibility-hides without blur.
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
@@ -332,7 +331,6 @@ function copyViaExecCommand(text: string): boolean {
 type PendingCopyClipboardController = {
   resolveTerminal: () => void;
   resolveOriginal: () => void;
-  /** Case B: original now for platforms; arm short after delay via nested clipboard write. */
   resolveOriginalAndArmShortLater: (delayMs: number) => void;
   isSettled: () => boolean;
 };
@@ -350,60 +348,103 @@ function beginPendingClipboardFromCopyGesture(
     return null;
   }
 
+  let settled = false;
+  let resolveBlob: ((blob: Blob) => void) | null = null;
+  let safetyTimer = 0;
+
+  const settle = (text: string, usedTerminalPlain: boolean) => {
+    if (settled) return;
+    settled = true;
+    window.clearTimeout(safetyTimer);
+    resolveBlob?.(new Blob([text], { type: "text/plain" }));
+    onResolved(usedTerminalPlain);
+  };
+
+  const plainPromise = new Promise<Blob>((resolve) => {
+    resolveBlob = resolve;
+  });
+
+  safetyTimer = window.setTimeout(() => {
+    settle(displayCommand, false);
+  }, safetyMs);
+
+  void navigator.clipboard
+    .write([
+      new ClipboardItem({
+        "text/plain": plainPromise,
+        "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
+      }),
+    ])
+    .catch(() => {
+      if (!settled) {
+        settle(displayCommand, false);
+      }
+    });
+
+  return {
+    isSettled: () => settled,
+    resolveTerminal: () => settle(terminalCommand, true),
+    resolveOriginal: () => settle(displayCommand, false),
+    resolveOriginalAndArmShortLater: () => settle(displayCommand, false),
+  };
+}
+
+/**
+ * macOS Case A/B clipboard from copy gesture.
+ *
+ * text/html = original immediately (ChatGPT/Claude often paste HTML).
+ * text/plain = short on Case A (blur), or short after platform window on Case B
+ * (Terminal), else original.
+ *
+ * This avoids background writeText (fails when tab is hidden) — the plain promise
+ * was started during copy and may resolve later without focus.
+ */
+function beginMacClipboardFromCopyGesture(
+  displayCommand: string,
+  terminalCommand: string,
+  html: string,
+  getFlags: () => { caseA: boolean; caseB: boolean },
+  onResolved: (usedTerminalPlain: boolean) => void,
+  platformThenMs: number,
+  safetyMs: number,
+): PendingCopyClipboardController | null {
+  if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
+    void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
+    onResolved(false);
+    return null;
+  }
+
   const copyAt = Date.now();
   let settled = false;
-  let decide!: (decision: "terminal" | "original" | "original-then-short") => void;
-  let shortDelayMs = PLATFORM_THEN_TERMINAL_ARM_MS;
-
-  const decisionPromise = new Promise<"terminal" | "original" | "original-then-short" | "safety">(
-    (resolve) => {
-      decide = resolve;
-      window.setTimeout(() => resolve("safety"), safetyMs);
-    },
-  );
+  let forceTerminal = false;
 
   const plainPromise = (async () => {
-    const decision = await decisionPromise;
-    if (settled) {
-      return new Blob([displayCommand], { type: "text/plain" });
+    while (Date.now() - copyAt < platformThenMs) {
+      if (forceTerminal || getFlags().caseA) {
+        settled = true;
+        onResolved(true);
+        return new Blob([terminalCommand], { type: "text/plain" });
+      }
+      await new Promise((r) => window.setTimeout(r, 40));
     }
-    settled = true;
 
-    if (decision === "terminal") {
-      onResolved(true);
+    // Platform paste window elapsed.
+    if (forceTerminal || getFlags().caseA || getFlags().caseB) {
+      settled = true;
+      onResolved(Boolean(forceTerminal || getFlags().caseA));
       return new Blob([terminalCommand], { type: "text/plain" });
     }
 
+    settled = true;
     onResolved(false);
-    const originalBlob = new Blob([displayCommand], { type: "text/plain" });
-
-    if (decision === "original-then-short") {
-      const remain = Math.max(0, shortDelayMs - (Date.now() - copyAt));
-      // Arm short from this ClipboardItem promise chain (copy gesture). Inner
-      // promise resolves later without focus — that is what Terminal needs.
-      void Promise.resolve().then(() => {
-        void navigator.clipboard
-          .write([
-            new ClipboardItem({
-              "text/plain": new Promise<Blob>((resolve) => {
-                window.setTimeout(() => {
-                  resolve(new Blob([terminalCommand], { type: "text/plain" }));
-                }, remain);
-              }),
-              "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
-            }),
-          ])
-          .catch(() => undefined);
-      });
-    }
-
-    return originalBlob;
+    return new Blob([displayCommand], { type: "text/plain" });
   })();
 
   void navigator.clipboard
     .write([
       new ClipboardItem({
         "text/plain": plainPromise,
+        // Immediate original for web apps that prefer HTML over pending plain.
         "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
       }),
     ])
@@ -415,17 +456,24 @@ function beginPendingClipboardFromCopyGesture(
       }
     });
 
+  // Safety: if nothing claimed, ensure we don't hang forever (plainPromise loop ends at platformThen,
+  // but keep API compatible).
+  window.setTimeout(() => {
+    if (!settled && !getFlags().caseA && !getFlags().caseB) {
+      // plainPromise will settle to original at platformThen; nothing else to do.
+    }
+  }, safetyMs);
+
   return {
     isSettled: () => settled,
     resolveTerminal: () => {
-      if (!settled) decide("terminal");
+      forceTerminal = true;
     },
     resolveOriginal: () => {
-      if (!settled) decide("original");
+      // Case B: keep plain pending until platformThen → short; HTML already has original.
     },
-    resolveOriginalAndArmShortLater: (delayMs: number) => {
-      shortDelayMs = delayMs;
-      if (!settled) decide("original-then-short");
+    resolveOriginalAndArmShortLater: () => {
+      // Case B: HTML original already available; plain becomes short after platformThen.
     },
   };
 }
@@ -710,7 +758,7 @@ function SelectableCommand({
         });
     }
 
-    /** macOS Case B: original for ChatGPT now; short for Terminal after platform window. */
+    /** macOS Case B: HTML already has original; plain becomes short after platform window. */
     function forceMacCaseBOriginal() {
       if (macCaseARef.current || macSpotlightUsedRef.current) return;
       macCaseBRef.current = true;
@@ -725,43 +773,19 @@ function SelectableCommand({
         macShortRetryTimerRef.current = 0;
       }
 
-      const ctrl = macClipboardCtrlRef.current;
       delayedArmStartedRef.current = true;
+      // Signal Case B only — do not writeText/resolveOriginal (that aborts the
+      // copy-gesture plain promise which must resolve to short for Terminal).
+      macClipboardCtrlRef.current?.resolveOriginalAndArmShortLater(
+        PLATFORM_THEN_TERMINAL_ARM_MS,
+      );
 
-      // Do NOT writeText here — it aborts the copy-gesture pending write and then
-      // Terminal short can never be armed while the tab is hidden.
-      if (ctrl && !ctrl.isSettled()) {
-        ctrl.resolveOriginalAndArmShortLater(PLATFORM_THEN_TERMINAL_ARM_MS);
-        // Mark armed after the platform window (nested write resolves then).
-        macShortRetryTimerRef.current = window.setTimeout(() => {
-          macShortRetryTimerRef.current = 0;
-          if (macCaseBRef.current && !macCaseARef.current) {
-            armedRef.current = true;
-          }
-        }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
-        return;
-      }
-
-      // Fallback if pending already settled.
-      void navigator.clipboard?.writeText(displayCommand).catch(() => {
-        copyViaExecCommand(displayCommand);
-      });
       macShortRetryTimerRef.current = window.setTimeout(() => {
         macShortRetryTimerRef.current = 0;
-        if (!activeRef.current || macCaseARef.current || !macCaseBRef.current) return;
-        void navigator.clipboard
-          ?.writeText(terminalCommand)
-          .then(() => {
-            armedRef.current = true;
-          })
-          .catch(() => {
-            if (copyViaExecCommand(terminalCommand)) {
-              armedRef.current = true;
-            } else {
-              delayedArmStartedRef.current = false;
-            }
-          });
-      }, PLATFORM_THEN_TERMINAL_ARM_MS);
+        if (macCaseBRef.current && !macCaseARef.current) {
+          armedRef.current = true;
+        }
+      }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
     }
 
     /**
@@ -1130,22 +1154,29 @@ function SelectableCommand({
       return;
     }
 
-    // macOS: Chromium = pending-only (like Linux). NEVER sync-write original first —
-    // that completes the clipboard and cancels the pending short resolve (Case A break).
-    // Safari (no promise ClipboardItem) = sync original; Case A uses gesture writeText.
+    // macOS: HTML = original immediately (ChatGPT/Claude); plain → short after
+    // Case A blur or after platform window for Case B Terminal.
     if (os === "macos") {
       if (supportsPromiseClipboardItem()) {
-        macClipboardCtrlRef.current = beginPendingClipboardFromCopyGesture(
+        macClipboardCtrlRef.current = beginMacClipboardFromCopyGesture(
           displayCommand,
           terminalCommand,
           html,
+          () => ({
+            caseA: macCaseARef.current,
+            caseB: macCaseBRef.current,
+          }),
           (usedTerminalPlain) => {
             if (usedTerminalPlain) {
               macCaseARef.current = true;
               armedRef.current = true;
               delayedArmStartedRef.current = true;
+            } else if (macCaseBRef.current) {
+              armedRef.current = true;
+              delayedArmStartedRef.current = true;
             }
           },
+          PLATFORM_THEN_TERMINAL_ARM_MS,
           MAC_PENDING_SAFETY_MS,
         );
       } else {
