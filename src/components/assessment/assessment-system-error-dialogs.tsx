@@ -80,6 +80,11 @@ const MAC_PENDING_SAFETY_MS = 20000;
  * Keep pending open so Case A blur / Ctrl+Alt+T can still resolve to short.
  */
 const LINUX_PENDING_SAFETY_MS = 20000;
+/**
+ * Windows pending safety: Case B leave is often >2.5s after copy; keep pending
+ * open so resolveOriginalAndArmShortLater can still schedule the short swap.
+ */
+const WINDOWS_PENDING_SAFETY_MS = 20000;
 /** Delay before Linux blur→Case A so ChatGPT tab visibility can claim Case B first. */
 /** Delay blur Case A so visibility Case B can claim ChatGPT tabs first. */
 const LINUX_CASE_A_BLUR_DELAY_MS = 400;
@@ -632,6 +637,8 @@ function SelectableCommand({
   const linuxCaseAFromShortcutRef = useRef(false);
   const linuxClipboardCtrlRef = useRef<PendingCopyClipboardController | null>(null);
   const macClipboardCtrlRef = useRef<PendingCopyClipboardController | null>(null);
+  /** Windows Case B: pending write from copy gesture → original then short after 3.5s. */
+  const windowsClipboardCtrlRef = useRef<PendingCopyClipboardController | null>(null);
   const macCaseARef = useRef(false);
   const macCaseBRef = useRef(false);
   const macWindowBlurredRef = useRef(false);
@@ -893,6 +900,55 @@ function SelectableCommand({
       return true;
     }
 
+    /**
+     * Windows leave after copy.
+     * Case A (quick): resolve pending → short immediately.
+     * Case B (platforms): resolve pending → original now, short after 3.5s
+     * via nested clipboard write started from the copy gesture (background
+     * writeText / writeTerminalPlainAfterDelay often never commits).
+     */
+    function resolveWindowsCopyGestureOnLeave() {
+      const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
+      const ctrl = windowsClipboardCtrlRef.current;
+
+      if (quickLeave) {
+        if (ctrl && !ctrl.isSettled()) {
+          ctrl.resolveTerminal();
+          armedRef.current = true;
+          delayedArmStartedRef.current = true;
+          return true;
+        }
+        void armTerminalPlain();
+        return true;
+      }
+
+      // Case B: original for ChatGPT/etc., then short for CMD/Terminal.
+      // Delay is measured from copyAt inside the pending helper — pass
+      // elapsed+3500 so the short swap is ~3.5s after this leave, not after copy.
+      if (ctrl && !ctrl.isSettled()) {
+        ctrl.resolveOriginalAndArmShortLater(
+          Date.now() - copyAtRef.current + PLATFORM_THEN_TERMINAL_ARM_MS,
+        );
+        delayedArmStartedRef.current = true;
+        window.setTimeout(() => {
+          if (activeRef.current) armedRef.current = true;
+        }, PLATFORM_THEN_TERMINAL_ARM_MS);
+        return true;
+      }
+
+      if (delayedArmStartedRef.current || armedRef.current) {
+        return true;
+      }
+
+      if (leaveCountRef.current <= 1) {
+        armTerminalPlainDelayed();
+        return true;
+      }
+
+      void armTerminalPlain();
+      return true;
+    }
+
     function handleLeaveFromPage() {
       if (os === "linux") {
         if (linuxCaseBRef.current) {
@@ -905,25 +961,13 @@ function SelectableCommand({
         return;
       }
 
-      const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
-
       // macOS: blur/visibility handlers own Case A/B — do not force Case A here.
       // (Previously this raced visibility and resolved pending→short for ChatGPT.)
       if (os === "macos") {
         return;
       }
 
-      if (quickLeave) {
-        void armTerminalPlain();
-        return;
-      }
-
-      if (leaveCountRef.current <= 1) {
-        armTerminalPlainDelayed();
-        return;
-      }
-
-      void armTerminalPlain();
+      resolveWindowsCopyGestureOnLeave();
     }
 
     function onVisibility() {
@@ -983,6 +1027,20 @@ function SelectableCommand({
           }
           return;
         }
+        // Windows Case B: pending original→short is in flight — do not cancel it
+        // with writeGen++ / writeText (that left original stuck on the clipboard).
+        if (
+          os === "windows" &&
+          delayedArmStartedRef.current &&
+          !armedRef.current
+        ) {
+          // Keep platform window: pending short arms ~3.5s after Case B leave.
+          // Approximate with copyAt + leave isn't tracked; avoid cancelling while
+          // armedRef is still false and we're within a generous platform window.
+          if (Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS + PLATFORM_THEN_TERMINAL_ARM_MS) {
+            return;
+          }
+        }
         void armTerminalPlain();
       }
     }
@@ -1000,6 +1058,14 @@ function SelectableCommand({
         } else {
           armMacCaseBShortLater();
         }
+        return;
+      }
+      if (
+        os === "windows" &&
+        delayedArmStartedRef.current &&
+        !armedRef.current &&
+        Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS + PLATFORM_THEN_TERMINAL_ARM_MS
+      ) {
         return;
       }
       void armTerminalPlain();
@@ -1122,19 +1188,8 @@ function SelectableCommand({
 
       if (!isAppSwitchGesture(event, os)) return;
 
-      const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
-
-      if (quickLeave) {
-        void armTerminalPlain();
-        return;
-      }
-
-      if (leaveCountRef.current === 0) {
-        armTerminalPlainDelayed();
-        return;
-      }
-
-      void armTerminalPlain();
+      // Windows Alt+Tab / Win key — same Case A/B resolve as blur/visibility.
+      resolveWindowsCopyGestureOnLeave();
     }
 
     function onKeyUp(event: KeyboardEvent) {
@@ -1184,6 +1239,7 @@ function SelectableCommand({
     }
     linuxClipboardCtrlRef.current = null;
     macClipboardCtrlRef.current = null;
+    windowsClipboardCtrlRef.current = null;
     macCaseARef.current = false;
     macCaseBRef.current = false;
     macWindowBlurredRef.current = false;
@@ -1252,6 +1308,28 @@ function SelectableCommand({
       } else {
         void writeClipboard(displayCommand, html).catch(() => undefined);
       }
+      return;
+    }
+
+    // Windows: pending from copy gesture so Case B can arm short after 3.5s while
+    // the tab is backgrounded. A sync writeClipboard(original) here races and
+    // cancels writeTerminalPlainAfterDelay — leaving original stuck forever.
+    if (supportsPromiseClipboardItem()) {
+      windowsClipboardCtrlRef.current = beginPendingClipboardFromCopyGesture(
+        displayCommand,
+        terminalCommand,
+        html,
+        (usedTerminalPlain) => {
+          if (usedTerminalPlain) {
+            armedRef.current = true;
+            delayedArmStartedRef.current = true;
+            return;
+          }
+          // Case B original committed; nested short write already scheduled.
+          delayedArmStartedRef.current = true;
+        },
+        WINDOWS_PENDING_SAFETY_MS,
+      );
       return;
     }
 
