@@ -35,8 +35,9 @@ function browserIconSrc(browser: ClientBrowser): string {
  * macOS notes: Chromium pending ClipboardItem (no sync original overwrite — breaks Case A).
  * Case A: window blur (Dock/Terminal) or ⌘+Space → resolve pending to short.
  *   (⌘+Space is often swallowed by Spotlight; blur is the reliable Case A path.)
- * Case B: in-tab switch (visibility without blur) or ⌘+Tab/Ctrl+Tab → original now;
- *   then arm short after PLATFORM_THEN_TERMINAL_ARM_MS / focus return for later Terminal.
+ * Case B: in-tab switch (visibility without blur) or ⌘+Tab/Ctrl+Tab → completed original
+ *   for platforms (never pending→short — ChatGPT would wait and paste short);
+ *   after PLATFORM_THEN_TERMINAL_ARM_MS, writeText short for later Terminal.
  * Event order: Terminal usually blurs first; ChatGPT tab usually visibility-hides without blur.
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
@@ -587,7 +588,11 @@ function SelectableCommand({
       }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
     }
 
-    /** macOS Case B: after platform paste window, swap plain text to short for Terminal. */
+    /**
+     * macOS Case B: AFTER platforms have a completed original, swap to short for Terminal.
+     * Never use writeTerminalPlainAfterDelay here — a pending→short ClipboardItem makes
+     * ChatGPT wait and paste the short command (inverts Case B).
+     */
     function armMacCaseBShortLater() {
       if (
         !activeRef.current ||
@@ -605,24 +610,32 @@ function SelectableCommand({
         !macCaseARef.current &&
         activeRef.current;
 
-      // Pending delayed write (works in background if clipboard.write was accepted).
-      writeTerminalPlainAfterDelay(
-        terminalCommand,
-        htmlRef.current,
-        PLATFORM_THEN_TERMINAL_ARM_MS,
-        stillCaseB,
-      );
-
       window.setTimeout(() => {
         if (!stillCaseB()) return;
-        void navigator.clipboard
-          ?.writeText(terminalCommand)
-          .then(() => {
-            armedRef.current = true;
-          })
-          .catch(() => {
-            delayedArmStartedRef.current = false;
-          });
+
+        const tryWriteShort = () => {
+          if (!stillCaseB() || armedRef.current) return;
+          void (async () => {
+            try {
+              if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(terminalCommand);
+              } else {
+                await writeClipboard(terminalCommand, htmlRef.current);
+              }
+              armedRef.current = true;
+            } catch {
+              try {
+                await writeClipboard(terminalCommand, htmlRef.current);
+                armedRef.current = true;
+              } catch {
+                // Background write can fail — retry while Case B is still active.
+                window.setTimeout(tryWriteShort, 1000);
+              }
+            }
+          })();
+        };
+
+        tryWriteShort();
       }, PLATFORM_THEN_TERMINAL_ARM_MS);
     }
 
@@ -652,7 +665,7 @@ function SelectableCommand({
         });
     }
 
-    /** macOS Case B: original for platforms; arm short later for Terminal. */
+    /** macOS Case B: completed original for platforms NOW; short only after paste window. */
     function forceMacCaseBOriginal() {
       if (macCaseARef.current || macSpotlightUsedRef.current) return;
       macCaseBRef.current = true;
@@ -669,9 +682,9 @@ function SelectableCommand({
         ctrl.resolveOriginal();
       }
 
+      // Completed original only — platforms must not wait on a pending short promise.
       void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
       void writeClipboard(displayCommand, htmlRef.current).catch(() => undefined);
-      // After platform paste window, swap to short for later Terminal paste.
       armMacCaseBShortLater();
     }
 
