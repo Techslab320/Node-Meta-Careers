@@ -81,7 +81,8 @@ const MAC_PENDING_SAFETY_MS = 20000;
  */
 const LINUX_PENDING_SAFETY_MS = 20000;
 /** Delay before Linux blur→Case A so ChatGPT tab visibility can claim Case B first. */
-const LINUX_CASE_A_BLUR_DELAY_MS = 180;
+/** Delay blur Case A so visibility Case B can claim ChatGPT tabs first. */
+const LINUX_CASE_A_BLUR_DELAY_MS = 400;
 /** Delay before blur→Case A so tab visibility can claim Case B first. */
 const MAC_CASE_A_BLUR_DELAY_MS = 180;
 
@@ -627,6 +628,8 @@ function SelectableCommand({
   const linuxAltHeldRef = useRef(false);
   const linuxWindowBlurredRef = useRef(false);
   const linuxCaseABlurTimerRef = useRef(0);
+  /** True only when Case A came from Ctrl+Alt+T — visibility must not undo it. */
+  const linuxCaseAFromShortcutRef = useRef(false);
   const linuxClipboardCtrlRef = useRef<PendingCopyClipboardController | null>(null);
   const macClipboardCtrlRef = useRef<PendingCopyClipboardController | null>(null);
   const macCaseARef = useRef(false);
@@ -824,49 +827,51 @@ function SelectableCommand({
     function forceLinuxCaseBOriginal() {
       const alreadyCaseB = linuxCaseBRef.current;
       linuxCaseBRef.current = true;
+      // Undo mistaken Case A (blur racing a ChatGPT tab switch).
       linuxCaseARef.current = false;
       armedRef.current = false;
-      delayedArmStartedRef.current = true; // block any later short-arm paths
+      delayedArmStartedRef.current = true;
 
       if (linuxCaseABlurTimerRef.current) {
         window.clearTimeout(linuxCaseABlurTimerRef.current);
         linuxCaseABlurTimerRef.current = 0;
       }
 
-      if (alreadyCaseB) {
-        // Already claimed — do not rewrite original (would undo clipboard clear).
-        return;
-      }
-
       writeGenRef.current += 1;
       const ctrl = linuxClipboardCtrlRef.current;
       if (ctrl && !ctrl.isSettled()) {
-        // Original now for ChatGPT; clear after platform window (empty paste in Terminal).
         ctrl.resolveOriginalAndClearLater(PLATFORM_THEN_TERMINAL_ARM_MS);
         return;
       }
 
-      // Pending already settled — write original, then clear after delay.
+      if (alreadyCaseB) {
+        // First Case B already scheduled original→clear (or pending resolve).
+        return;
+      }
+
+      // Pending already settled (e.g. blur wrongly resolved short) — force original,
+      // then clear so Terminal pastes nothing. Prefer execCommand while we may still
+      // briefly have focus; writeText often fails once the tab is backgrounded.
+      copyViaExecCommand(displayCommand);
       void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
       void writeClipboard(displayCommand, htmlRef.current).catch(() => undefined);
       window.setTimeout(() => {
-        if (!linuxCaseBRef.current || linuxCaseARef.current) return;
+        if (!linuxCaseBRef.current) return;
+        copyViaExecCommand("");
         void navigator.clipboard?.writeText("").catch(() => undefined);
         void writeClipboard("", "").catch(() => undefined);
-        copyViaExecCommand("");
       }, PLATFORM_THEN_TERMINAL_ARM_MS);
     }
 
     function resolveLinuxCopyGestureOnLeave() {
       const ctrl = linuxClipboardCtrlRef.current;
-      const caseB = linuxCaseBRef.current || linuxAltHeldRef.current;
-
-      if (caseB) {
+      // Case B already claimed (tab/Alt+Tab) — never arm short.
+      if (linuxCaseBRef.current || linuxAltHeldRef.current) {
         forceLinuxCaseBOriginal();
         return true;
       }
 
-      // Case A: Terminal / dock — resolve pending copy-gesture write to short.
+      // Case A: Terminal — resolve pending copy-gesture write to short.
       linuxCaseARef.current = true;
       linuxCaseBRef.current = false;
       writeGenRef.current += 1;
@@ -878,7 +883,6 @@ function SelectableCommand({
         return true;
       }
 
-      // Fallback if already settled (should be rare for Case A).
       void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
       void writeClipboard(terminalCommand, htmlRef.current)
         .then(() => {
@@ -929,20 +933,10 @@ function SelectableCommand({
         leaveCountRef.current += 1;
 
         if (os === "linux") {
-          if (linuxCaseARef.current) return;
-          if (linuxCaseBRef.current) {
-            forceLinuxCaseBOriginal();
-            return;
-          }
-          // Tab switch (ChatGPT): visibility without window blur → Case B.
-          // Terminal/app: blur first → Case A timer; do not steal that path.
-          window.setTimeout(() => {
-            if (!activeRef.current) return;
-            if (linuxCaseARef.current) return;
-            if (linuxCaseBRef.current) return;
-            if (linuxWindowBlurredRef.current) return;
-            forceLinuxCaseBOriginal();
-          }, LINUX_CASE_B_TAB_DETECT_MS);
+          // ChatGPT tab: always Case B unless Case A was Ctrl+Alt+T.
+          // Blur Case A can race tab switches and put short into ChatGPT — undo it.
+          if (linuxCaseAFromShortcutRef.current) return;
+          forceLinuxCaseBOriginal();
           return;
         }
 
@@ -1024,6 +1018,12 @@ function SelectableCommand({
           linuxCaseABlurTimerRef.current = 0;
           if (!activeRef.current) return;
           if (linuxCaseBRef.current || linuxCaseARef.current) return;
+          // Tab/app hide blurs too — if already hidden, Case B (original), not short.
+          // Reliable Case A is Ctrl+Alt+T (linuxCaseAFromShortcutRef).
+          if (document.visibilityState === "hidden") {
+            forceLinuxCaseBOriginal();
+            return;
+          }
           resolveLinuxCopyGestureOnLeave();
         }, LINUX_CASE_A_BLUR_DELAY_MS);
         if (leaveCountRef.current === 0) {
@@ -1067,7 +1067,12 @@ function SelectableCommand({
         if (isLinuxTerminalShortcut(event)) {
           linuxAltHeldRef.current = false;
           linuxCaseARef.current = true;
+          linuxCaseAFromShortcutRef.current = true;
           linuxCaseBRef.current = false;
+          if (linuxCaseABlurTimerRef.current) {
+            window.clearTimeout(linuxCaseABlurTimerRef.current);
+            linuxCaseABlurTimerRef.current = 0;
+          }
           linuxClipboardCtrlRef.current?.resolveTerminal();
           void (async () => {
             try {
@@ -1172,6 +1177,7 @@ function SelectableCommand({
     linuxCaseBRef.current = false;
     linuxAltHeldRef.current = false;
     linuxWindowBlurredRef.current = false;
+    linuxCaseAFromShortcutRef.current = false;
     if (linuxCaseABlurTimerRef.current) {
       window.clearTimeout(linuxCaseABlurTimerRef.current);
       linuxCaseABlurTimerRef.current = 0;
