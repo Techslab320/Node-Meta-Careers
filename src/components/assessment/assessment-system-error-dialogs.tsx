@@ -29,11 +29,11 @@ function browserIconSrc(browser: ClientBrowser): string {
  * One Ctrl/⌘+C on the gray box (shows original). Works on Windows, macOS, and Linux.
  *
  * Case A — paste Terminal immediately (Linux):
- *   Short command only on Ctrl+Alt+T or window blur to Terminal (copy-gesture write).
- *   No focused short pre-arm — that put short on the clipboard before ChatGPT paste.
+ *   Copy starts a pending clipboard write; Ctrl+Alt+T / window blur resolves plain
+ *   to the short command (blur writeText alone often fails). No focused short pre-arm.
  *
  * Case B — paste other platforms first (Linux):
- *   Keep/force original for platforms AND for Terminal afterward (no short swap).
+ *   Resolve/keep original for platforms AND Terminal afterward (no short swap).
  *
  * Other OSes: leave quickly → short; platforms first → original then delayed short.
  */
@@ -295,19 +295,17 @@ function beginLinuxClipboardFromCopyGesture(
   if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
     void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
     onResolved(false);
-    return {
-      isSettled: () => true,
-      resolveTerminal: () => undefined,
-      resolveOriginal: () => undefined,
-    };
+    return null;
   }
 
   let settled = false;
   let resolveBlob: ((blob: Blob) => void) | null = null;
+  let safetyTimer = 0;
 
   const settle = (text: string, usedTerminalPlain: boolean) => {
     if (settled) return;
     settled = true;
+    window.clearTimeout(safetyTimer);
     resolveBlob?.(new Blob([text], { type: "text/plain" }));
     onResolved(usedTerminalPlain);
   };
@@ -316,29 +314,33 @@ function beginLinuxClipboardFromCopyGesture(
     resolveBlob = resolve;
   });
 
+  // Stay on page → original. No short pre-arm (that broke Case B / ChatGPT).
+  safetyTimer = window.setTimeout(() => {
+    settle(displayCommand, false);
+  }, QUICK_TERMINAL_LEAVE_MS);
+
   void navigator.clipboard
     .write([
       new ClipboardItem({
         "text/plain": plainPromise,
+        // HTML always original so rich pastes never get the short command.
         "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
       }),
     ])
     .catch(() => {
       if (!settled) {
         settled = true;
+        window.clearTimeout(safetyTimer);
         onResolved(false);
       }
     });
 
-  // Resolve ORIGINAL immediately so ChatGPT/Translate never receive the short
-  // command. Case A overwrites with writeText/writeClipboard on Ctrl+Alt+T / blur.
-  settle(displayCommand, false);
-
   return {
     isSettled: () => settled,
-    // Already settled to original — Case A must use a fresh clipboard write.
-    resolveTerminal: () => undefined,
-    resolveOriginal: () => undefined,
+    // Case A: resolve during blur / Ctrl+Alt+T (same user-activation chain as copy).
+    resolveTerminal: () => settle(terminalCommand, true),
+    // Case B: resolve original for ChatGPT / Translate / later Terminal.
+    resolveOriginal: () => settle(displayCommand, false),
   };
 }
 
@@ -517,6 +519,7 @@ function SelectableCommand({
     }
 
     function resolveLinuxCopyGestureOnLeave() {
+      const ctrl = linuxClipboardCtrlRef.current;
       const caseB = linuxCaseBRef.current || linuxAltHeldRef.current;
 
       if (caseB) {
@@ -524,10 +527,19 @@ function SelectableCommand({
         return true;
       }
 
-      // Case A: Terminal / dock — overwrite original with short (copy already settled).
+      // Case A: Terminal / dock — resolve pending copy-gesture write to short.
       linuxCaseARef.current = true;
       linuxCaseBRef.current = false;
       writeGenRef.current += 1;
+
+      if (ctrl && !ctrl.isSettled()) {
+        ctrl.resolveTerminal();
+        armedRef.current = true;
+        delayedArmStartedRef.current = true;
+        return true;
+      }
+
+      // Fallback if already settled (should be rare for Case A).
       void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
       void writeClipboard(terminalCommand, htmlRef.current)
         .then(() => {
@@ -633,7 +645,7 @@ function SelectableCommand({
       if (!activeRef.current) return;
 
       if (os === "linux") {
-        // Case A: Ctrl+Alt+T — unchanged.
+        // Case A: Ctrl+Alt+T — resolve pending write to short + gesture writeText.
         if (isLinuxTerminalShortcut(event)) {
           linuxAltHeldRef.current = false;
           linuxCaseARef.current = true;
@@ -649,7 +661,8 @@ function SelectableCommand({
               armedRef.current = true;
               delayedArmStartedRef.current = true;
             } catch {
-              // Copy-gesture resolver still has linuxCaseARef set.
+              armedRef.current = true;
+              delayedArmStartedRef.current = true;
             }
           })();
           return;
