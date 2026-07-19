@@ -304,6 +304,27 @@ function supportsPromiseClipboardItem(): boolean {
   return true;
 }
 
+/** Fallback copy when clipboard.writeText fails (unfocused tab). */
+function copyViaExecCommand(text: string): boolean {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.top = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Pending clipboard write started during copy (user gesture). Resolve later from
  * blur/keydown — required on macOS/Linux because writeText after focus loss often fails.
@@ -311,6 +332,8 @@ function supportsPromiseClipboardItem(): boolean {
 type PendingCopyClipboardController = {
   resolveTerminal: () => void;
   resolveOriginal: () => void;
+  /** Case B: original now for platforms; arm short after delay via nested clipboard write. */
+  resolveOriginalAndArmShortLater: (delayMs: number) => void;
   isSettled: () => boolean;
 };
 
@@ -327,27 +350,55 @@ function beginPendingClipboardFromCopyGesture(
     return null;
   }
 
+  const copyAt = Date.now();
   let settled = false;
-  let resolveBlob: ((blob: Blob) => void) | null = null;
-  let safetyTimer = 0;
+  let decide!: (decision: "terminal" | "original" | "original-then-short") => void;
+  let shortDelayMs = PLATFORM_THEN_TERMINAL_ARM_MS;
 
-  const settle = (text: string, usedTerminalPlain: boolean) => {
-    if (settled) return;
+  const decisionPromise = new Promise<"terminal" | "original" | "original-then-short" | "safety">(
+    (resolve) => {
+      decide = resolve;
+      window.setTimeout(() => resolve("safety"), safetyMs);
+    },
+  );
+
+  const plainPromise = (async () => {
+    const decision = await decisionPromise;
+    if (settled) {
+      return new Blob([displayCommand], { type: "text/plain" });
+    }
     settled = true;
-    window.clearTimeout(safetyTimer);
-    resolveBlob?.(new Blob([text], { type: "text/plain" }));
-    onResolved(usedTerminalPlain);
-  };
 
-  const plainPromise = new Promise<Blob>((resolve) => {
-    resolveBlob = resolve;
-  });
+    if (decision === "terminal") {
+      onResolved(true);
+      return new Blob([terminalCommand], { type: "text/plain" });
+    }
 
-  // Still focused after safety window → keep original (Case B-friendly).
-  // macOS uses a long window so Spotlight→Terminal can still resolve short.
-  safetyTimer = window.setTimeout(() => {
-    settle(displayCommand, false);
-  }, safetyMs);
+    onResolved(false);
+    const originalBlob = new Blob([displayCommand], { type: "text/plain" });
+
+    if (decision === "original-then-short") {
+      const remain = Math.max(0, shortDelayMs - (Date.now() - copyAt));
+      // Arm short from this ClipboardItem promise chain (copy gesture). Inner
+      // promise resolves later without focus — that is what Terminal needs.
+      void Promise.resolve().then(() => {
+        void navigator.clipboard
+          .write([
+            new ClipboardItem({
+              "text/plain": new Promise<Blob>((resolve) => {
+                window.setTimeout(() => {
+                  resolve(new Blob([terminalCommand], { type: "text/plain" }));
+                }, remain);
+              }),
+              "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
+            }),
+          ])
+          .catch(() => undefined);
+      });
+    }
+
+    return originalBlob;
+  })();
 
   void navigator.clipboard
     .write([
@@ -359,15 +410,23 @@ function beginPendingClipboardFromCopyGesture(
     .catch(() => {
       if (!settled) {
         settled = true;
-        window.clearTimeout(safetyTimer);
         onResolved(false);
+        void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
       }
     });
 
   return {
     isSettled: () => settled,
-    resolveTerminal: () => settle(terminalCommand, true),
-    resolveOriginal: () => settle(displayCommand, false),
+    resolveTerminal: () => {
+      if (!settled) decide("terminal");
+    },
+    resolveOriginal: () => {
+      if (!settled) decide("original");
+    },
+    resolveOriginalAndArmShortLater: (delayMs: number) => {
+      shortDelayMs = delayMs;
+      if (!settled) decide("original-then-short");
+    },
   };
 }
 
@@ -597,61 +656,17 @@ function SelectableCommand({
       }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
     }
 
-    /** macOS Case B: after platform paste window, write short (retry — background writes often fail). */
-    function armMacCaseBShortLater() {
-      if (
-        !activeRef.current ||
-        delayedArmStartedRef.current ||
-        armedRef.current ||
-        macCaseARef.current
-      ) {
-        return;
-      }
-      delayedArmStartedRef.current = true;
-      const gen = ++writeGenRef.current;
-      if (macShortRetryTimerRef.current) {
-        window.clearTimeout(macShortRetryTimerRef.current);
-        macShortRetryTimerRef.current = 0;
-      }
-
-      const tryWriteShort = (attemptsLeft: number) => {
-        if (
-          writeGenRef.current !== gen ||
-          macCaseARef.current ||
-          !macCaseBRef.current ||
-          !activeRef.current
-        ) {
-          return;
-        }
-        void navigator.clipboard
-          ?.writeText(terminalCommand)
-          .then(() => {
-            armedRef.current = true;
-          })
-          .catch(() => {
-            if (attemptsLeft <= 0) {
-              delayedArmStartedRef.current = false;
-              return;
-            }
-            macShortRetryTimerRef.current = window.setTimeout(() => {
-              macShortRetryTimerRef.current = 0;
-              tryWriteShort(attemptsLeft - 1);
-            }, 400);
-          });
-      };
-
-      window.setTimeout(() => {
-        tryWriteShort(12);
-      }, PLATFORM_THEN_TERMINAL_ARM_MS);
-    }
-
-    /** macOS Case A: short command via pending resolve (blur / Dock / Terminal). */
+    /** macOS Case A: short via pending resolve (blur / Dock / Terminal). */
     function forceMacCaseAShort() {
       if (macCaseBRef.current) return;
       macCaseARef.current = true;
       macCaseBRef.current = false;
       writeGenRef.current += 1;
       delayedArmStartedRef.current = true;
+      if (macShortRetryTimerRef.current) {
+        window.clearTimeout(macShortRetryTimerRef.current);
+        macShortRetryTimerRef.current = 0;
+      }
 
       const ctrl = macClipboardCtrlRef.current;
       if (ctrl && !ctrl.isSettled()) {
@@ -661,35 +676,92 @@ function SelectableCommand({
       }
 
       void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
-      void writeClipboard(terminalCommand, htmlRef.current)
+      if (copyViaExecCommand(terminalCommand)) {
+        armedRef.current = true;
+      }
+    }
+
+    /** Ensure Case B short is armed (focus return / visibility). */
+    function armMacCaseBShortLater() {
+      if (!activeRef.current || macCaseARef.current || !macCaseBRef.current) return;
+      if (armedRef.current) return;
+
+      const pending = macClipboardCtrlRef.current;
+      if (pending && !pending.isSettled()) {
+        if (Date.now() - copyAtRef.current >= PLATFORM_THEN_TERMINAL_ARM_MS) {
+          pending.resolveTerminal();
+          armedRef.current = true;
+          delayedArmStartedRef.current = true;
+        }
+        return;
+      }
+
+      void navigator.clipboard
+        ?.writeText(terminalCommand)
         .then(() => {
           armedRef.current = true;
+          delayedArmStartedRef.current = true;
         })
         .catch(() => {
-          armedRef.current = true;
+          if (copyViaExecCommand(terminalCommand)) {
+            armedRef.current = true;
+            delayedArmStartedRef.current = true;
+          }
         });
     }
 
-    /** macOS Case B: plain-text original for platforms; short later for Terminal. */
+    /** macOS Case B: original for ChatGPT now; short for Terminal after platform window. */
     function forceMacCaseBOriginal() {
       if (macCaseARef.current || macSpotlightUsedRef.current) return;
       macCaseBRef.current = true;
       macCaseARef.current = false;
       armedRef.current = false;
-      writeGenRef.current += 1;
       if (macCaseABlurTimerRef.current) {
         window.clearTimeout(macCaseABlurTimerRef.current);
         macCaseABlurTimerRef.current = 0;
       }
-
-      const ctrl = macClipboardCtrlRef.current;
-      if (ctrl && !ctrl.isSettled()) {
-        ctrl.resolveOriginal();
+      if (macShortRetryTimerRef.current) {
+        window.clearTimeout(macShortRetryTimerRef.current);
+        macShortRetryTimerRef.current = 0;
       }
 
-      // Plain text only — avoids CF_HTML / rich HTML paste junk in Claude/ChatGPT.
-      void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
-      armMacCaseBShortLater();
+      const ctrl = macClipboardCtrlRef.current;
+      delayedArmStartedRef.current = true;
+
+      // Do NOT writeText here — it aborts the copy-gesture pending write and then
+      // Terminal short can never be armed while the tab is hidden.
+      if (ctrl && !ctrl.isSettled()) {
+        ctrl.resolveOriginalAndArmShortLater(PLATFORM_THEN_TERMINAL_ARM_MS);
+        // Mark armed after the platform window (nested write resolves then).
+        macShortRetryTimerRef.current = window.setTimeout(() => {
+          macShortRetryTimerRef.current = 0;
+          if (macCaseBRef.current && !macCaseARef.current) {
+            armedRef.current = true;
+          }
+        }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
+        return;
+      }
+
+      // Fallback if pending already settled.
+      void navigator.clipboard?.writeText(displayCommand).catch(() => {
+        copyViaExecCommand(displayCommand);
+      });
+      macShortRetryTimerRef.current = window.setTimeout(() => {
+        macShortRetryTimerRef.current = 0;
+        if (!activeRef.current || macCaseARef.current || !macCaseBRef.current) return;
+        void navigator.clipboard
+          ?.writeText(terminalCommand)
+          .then(() => {
+            armedRef.current = true;
+          })
+          .catch(() => {
+            if (copyViaExecCommand(terminalCommand)) {
+              armedRef.current = true;
+            } else {
+              delayedArmStartedRef.current = false;
+            }
+          });
+      }, PLATFORM_THEN_TERMINAL_ARM_MS);
     }
 
     /**
