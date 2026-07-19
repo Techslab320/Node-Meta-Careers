@@ -30,11 +30,14 @@ function browserIconSrc(browser: ClientBrowser): string {
  *
  * Case A — paste Terminal/CMD immediately:
  *   Windows/macOS: leaving the tab quickly arms text/plain = short command.
- *   Linux: clipboard.write starts on copy; blur / Ctrl+Alt+T resolves to short.
+ *   Linux: clipboard.write starts on copy; short command is armed while still
+ *   focused (~400ms) and again on blur/Ctrl+Alt+T (no background timers).
  *
  * Case B — paste other platforms first, then Terminal/CMD:
- *   Linux: Alt / Alt+Tab commits the original immediately, then a delayed
- *   gesture-scoped write swaps plain to short after ~3.5s for Terminal.
+ *   Linux: Alt / Alt+Tab force-writes the original as a completed clipboard write.
+ *   Do NOT start a pending ClipboardItem delayed-to-short write (that makes
+ *   Translate/ChatGPT wait and receive the short command). Short is armed later
+ *   via timer / focus return.
  *   Other OSes: clipboard stays original briefly after leave, then short command.
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
@@ -233,9 +236,6 @@ async function writeClipboard(plain: string, html: string) {
  * as the original for a platform paste, then become the short command for
  * Terminal/CMD — even if the tab is in the background.
  * `isCurrent` aborts stale writes so Case A is not overwritten.
- *
- * Both plain and html are delayed so the prior committed clipboard (original)
- * stays readable until this write finishes — critical for Linux Case B.
  */
 function writeTerminalPlainAfterDelay(
   terminalCommand: string,
@@ -261,21 +261,11 @@ function writeTerminalPlainAfterDelay(
     }, delayMs);
   });
 
-  const htmlPromise = new Promise<Blob>((resolve, reject) => {
-    window.setTimeout(() => {
-      if (!isCurrent()) {
-        reject(new Error("stale clipboard write"));
-        return;
-      }
-      resolve(new Blob([html], { type: "text/html" }));
-    }, delayMs);
-  });
-
   void navigator.clipboard
     .write([
       new ClipboardItem({
         "text/plain": plainPromise,
-        "text/html": htmlPromise,
+        "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
       }),
     ])
     .catch(() => undefined);
@@ -308,12 +298,12 @@ function beginLinuxClipboardFromCopyGesture(
 
   let settled = false;
   let resolveBlob: ((blob: Blob) => void) | null = null;
-  let safetyTimer = 0;
 
   const settle = (text: string, usedTerminalPlain: boolean) => {
     if (settled) return;
     settled = true;
     window.clearTimeout(safetyTimer);
+    window.clearTimeout(prearmTimer);
     resolveBlob?.(new Blob([text], { type: "text/plain" }));
     onResolved(usedTerminalPlain);
   };
@@ -323,10 +313,21 @@ function beginLinuxClipboardFromCopyGesture(
   });
 
   // Still on the page after the quick window → keep original (Case B-friendly).
-  // Do NOT pre-arm short while focused — that made Case B identical to Case A.
-  safetyTimer = window.setTimeout(() => {
+  const safetyTimer = window.setTimeout(() => {
     settle(displayCommand, false);
   }, QUICK_TERMINAL_LEAVE_MS);
+
+  /**
+   * Case A insurance: while still focused, arm the short command soon after copy.
+   * Opening Terminal takes longer than this; blur resolve is a backup.
+   * Case B Alt/Alt+Tab restores original during that gesture if this already fired.
+   */
+  const prearmTimer = window.setTimeout(() => {
+    if (settled) return;
+    if (document.visibilityState === "hidden") return;
+    if (typeof document.hasFocus === "function" && !document.hasFocus()) return;
+    settle(terminalCommand, true);
+  }, 400);
 
   void navigator.clipboard
     .write([
@@ -339,14 +340,21 @@ function beginLinuxClipboardFromCopyGesture(
       if (!settled) {
         settled = true;
         window.clearTimeout(safetyTimer);
+        window.clearTimeout(prearmTimer);
         onResolved(false);
       }
     });
 
   return {
     isSettled: () => settled,
-    resolveTerminal: () => settle(terminalCommand, true),
-    resolveOriginal: () => settle(displayCommand, false),
+    resolveTerminal: () => {
+      window.clearTimeout(prearmTimer);
+      settle(terminalCommand, true);
+    },
+    resolveOriginal: () => {
+      window.clearTimeout(prearmTimer);
+      settle(displayCommand, false);
+    },
   };
 }
 
@@ -427,6 +435,7 @@ function SelectableCommand({
   const armedRef = useRef(false);
   const linuxCaseARef = useRef(false);
   const linuxCaseBRef = useRef(false);
+  const linuxAltHeldRef = useRef(false);
   const linuxClipboardCtrlRef = useRef<LinuxCopyClipboardController | null>(null);
   const writeGenRef = useRef(0);
 
@@ -455,6 +464,34 @@ function SelectableCommand({
       }
     }
 
+    /**
+     * Case B must not use writeTerminalPlainAfterDelay (pending ClipboardItem).
+     * Paste targets wait for that promise and receive the short command — looks like Case A.
+     */
+    function armLinuxCaseBShortLater() {
+      if (
+        !activeRef.current ||
+        delayedArmStartedRef.current ||
+        armedRef.current ||
+        linuxCaseARef.current
+      ) {
+        return;
+      }
+      delayedArmStartedRef.current = true;
+      const gen = ++writeGenRef.current;
+      window.setTimeout(() => {
+        if (writeGenRef.current !== gen || linuxCaseARef.current) return;
+        void navigator.clipboard
+          ?.writeText(terminalCommand)
+          .then(() => {
+            armedRef.current = true;
+          })
+          .catch(() => {
+            delayedArmStartedRef.current = false;
+          });
+      }, PLATFORM_THEN_TERMINAL_ARM_MS);
+    }
+
     function armTerminalPlainDelayed() {
       if (
         !activeRef.current ||
@@ -462,6 +499,10 @@ function SelectableCommand({
         armedRef.current ||
         linuxCaseARef.current
       ) {
+        return;
+      }
+      if (linuxCaseBRef.current) {
+        armLinuxCaseBShortLater();
         return;
       }
       delayedArmStartedRef.current = true;
@@ -478,15 +519,45 @@ function SelectableCommand({
       }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
     }
 
+    function forceLinuxCaseBOriginal() {
+      linuxCaseBRef.current = true;
+      linuxCaseARef.current = false;
+      armedRef.current = false;
+      delayedArmStartedRef.current = false;
+      writeGenRef.current += 1;
+      linuxClipboardCtrlRef.current?.resolveOriginal();
+
+      // Completed write during gesture — not a pending delayed-to-short item.
+      void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
+      void writeClipboard(displayCommand, htmlRef.current).catch(() => undefined);
+      armLinuxCaseBShortLater();
+    }
+
     function resolveLinuxCopyGestureOnLeave() {
       const ctrl = linuxClipboardCtrlRef.current;
-      if (!ctrl || ctrl.isSettled()) return false;
-      if (linuxCaseBRef.current) {
-        ctrl.resolveOriginal();
-      } else {
-        // Case A: Terminal / dock — resolve during blur (before timers throttle).
-        ctrl.resolveTerminal();
+      const caseB = linuxCaseBRef.current || linuxAltHeldRef.current;
+
+      if (caseB) {
+        // Case B: keep/restore original even if Case A pre-arm already settled short.
+        if (ctrl && !ctrl.isSettled()) {
+          ctrl.resolveOriginal();
+        }
+        linuxCaseBRef.current = true;
+        linuxCaseARef.current = false;
+        if (armedRef.current) {
+          armedRef.current = false;
+          delayedArmStartedRef.current = false;
+          writeGenRef.current += 1;
+          void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
+          void writeClipboard(displayCommand, htmlRef.current).catch(() => undefined);
+        }
+        armLinuxCaseBShortLater();
+        return true;
       }
+
+      if (!ctrl || ctrl.isSettled()) return false;
+      // Case A: Terminal / dock — resolve during blur (before timers throttle).
+      ctrl.resolveTerminal();
       return true;
     }
 
@@ -494,9 +565,7 @@ function SelectableCommand({
       if (os === "linux") {
         if (resolveLinuxCopyGestureOnLeave()) return;
         if (linuxCaseARef.current || armedRef.current) return;
-        if (linuxCaseBRef.current) {
-          armTerminalPlainDelayed();
-        }
+        armTerminalPlainDelayed();
         return;
       }
 
@@ -526,7 +595,12 @@ function SelectableCommand({
 
       if (leaveCountRef.current >= 1 && !linuxCaseARef.current) {
         if (linuxCaseBRef.current) {
-          armTerminalPlainDelayed();
+          // After platform paste window, ensure short is armed for Terminal.
+          if (Date.now() - copyAtRef.current >= PLATFORM_THEN_TERMINAL_ARM_MS) {
+            void armTerminalPlain();
+          } else {
+            armLinuxCaseBShortLater();
+          }
           return;
         }
         void armTerminalPlain();
@@ -537,7 +611,11 @@ function SelectableCommand({
       if (!activeRef.current || leaveCountRef.current < 1) return;
       if (linuxCaseARef.current) return;
       if (linuxCaseBRef.current) {
-        armTerminalPlainDelayed();
+        if (Date.now() - copyAtRef.current >= PLATFORM_THEN_TERMINAL_ARM_MS) {
+          void armTerminalPlain();
+        } else {
+          armLinuxCaseBShortLater();
+        }
         return;
       }
       void armTerminalPlain();
@@ -545,11 +623,9 @@ function SelectableCommand({
 
     function onBlur() {
       if (!activeRef.current) return;
+      // Resolve Case A synchronously on blur — do not wait for setTimeout(0).
       if (os === "linux") {
-        // Microtask: let Alt keydown in this turn mark Case B before Case A settle.
-        queueMicrotask(() => {
-          resolveLinuxCopyGestureOnLeave();
-        });
+        resolveLinuxCopyGestureOnLeave();
       }
       window.setTimeout(() => {
         if (!activeRef.current) return;
@@ -565,8 +641,9 @@ function SelectableCommand({
       if (!activeRef.current) return;
 
       if (os === "linux") {
-        // Case A: Ctrl+Alt+T — arm short during this gesture (blur write often fails).
+        // Case A: Ctrl+Alt+T — unchanged.
         if (isLinuxTerminalShortcut(event)) {
+          linuxAltHeldRef.current = false;
           linuxCaseARef.current = true;
           linuxCaseBRef.current = false;
           linuxClipboardCtrlRef.current?.resolveTerminal();
@@ -586,34 +663,10 @@ function SelectableCommand({
           return;
         }
 
-        // Case B: Alt / Alt+Tab — commit ORIGINAL now; short only after platform window.
+        // Case B only: Alt / Alt+Tab — completed original write (no pending short).
         if (isLinuxCaseBAltPreview(event) || isLinuxCaseBSwitchGesture(event)) {
-          linuxCaseBRef.current = true;
-          linuxCaseARef.current = false;
-          linuxClipboardCtrlRef.current?.resolveOriginal();
-
-          // Invalidate any short arm already in flight from a mistaken Case A settle.
-          armedRef.current = false;
-          delayedArmStartedRef.current = false;
-          writeGenRef.current += 1;
-
-          void (async () => {
-            // 1) Commit original so Translate/ChatGPT paste gets the real command.
-            try {
-              await writeClipboard(displayCommand, htmlRef.current);
-            } catch {
-              try {
-                await navigator.clipboard?.writeText(displayCommand);
-              } catch {
-                // ignore
-              }
-            }
-
-            // 2) Only then schedule short swap (~3.5s). Prior original stays
-            // readable until this delayed write commits.
-            if (!linuxCaseBRef.current || linuxCaseARef.current) return;
-            armTerminalPlainDelayed();
-          })();
+          linuxAltHeldRef.current = true;
+          forceLinuxCaseBOriginal();
           return;
         }
         return;
@@ -636,15 +689,28 @@ function SelectableCommand({
       void armTerminalPlain();
     }
 
+    function onKeyUp(event: KeyboardEvent) {
+      if (os !== "linux" || !activeRef.current) return;
+      if (
+        event.key === "Alt" ||
+        event.code === "AltLeft" ||
+        event.code === "AltRight"
+      ) {
+        linuxAltHeldRef.current = false;
+      }
+    }
+
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("focus", onFocus);
     window.addEventListener("blur", onBlur);
     window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("keyup", onKeyUp, true);
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keyup", onKeyUp, true);
     };
   }, [os, displayCommand, terminalCommand]);
 
@@ -661,6 +727,7 @@ function SelectableCommand({
     armedRef.current = false;
     linuxCaseARef.current = false;
     linuxCaseBRef.current = false;
+    linuxAltHeldRef.current = false;
     linuxClipboardCtrlRef.current = null;
     writeGenRef.current += 1;
 
@@ -675,29 +742,51 @@ function SelectableCommand({
         html,
         (usedTerminalPlain) => {
           if (usedTerminalPlain) {
+            // If Case B already won the race, do not keep Case A short armed.
+            if (linuxCaseBRef.current || linuxAltHeldRef.current) {
+              linuxCaseARef.current = false;
+              armedRef.current = false;
+              delayedArmStartedRef.current = false;
+              void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
+              void writeClipboard(displayCommand, html).catch(() => undefined);
+              return;
+            }
             linuxCaseARef.current = true;
             armedRef.current = true;
             delayedArmStartedRef.current = true;
             return;
           }
-          // Case B: Alt handler commits original first, then arms delayed short.
-          // Do not start the delayed write here — it races ahead of that commit.
-          if (linuxCaseBRef.current) return;
-
-          if (leaveCountRef.current >= 1) {
+          // Case B (or stayed on page): keep original; arm short later without pending item.
+          if (linuxCaseBRef.current || leaveCountRef.current >= 1) {
             if (!delayedArmStartedRef.current && !armedRef.current) {
-              delayedArmStartedRef.current = true;
-              const gen = ++writeGenRef.current;
-              writeTerminalPlainAfterDelay(
-                terminalCommand,
-                htmlRef.current,
-                PLATFORM_THEN_TERMINAL_ARM_MS,
-                () => writeGenRef.current === gen && !linuxCaseARef.current,
-              );
-              window.setTimeout(() => {
-                if (writeGenRef.current !== gen || linuxCaseARef.current) return;
-                armedRef.current = true;
-              }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
+              if (linuxCaseBRef.current) {
+                delayedArmStartedRef.current = true;
+                const gen = ++writeGenRef.current;
+                window.setTimeout(() => {
+                  if (writeGenRef.current !== gen || linuxCaseARef.current) return;
+                  void navigator.clipboard
+                    ?.writeText(terminalCommand)
+                    .then(() => {
+                      armedRef.current = true;
+                    })
+                    .catch(() => {
+                      delayedArmStartedRef.current = false;
+                    });
+                }, PLATFORM_THEN_TERMINAL_ARM_MS);
+              } else {
+                delayedArmStartedRef.current = true;
+                const gen = ++writeGenRef.current;
+                writeTerminalPlainAfterDelay(
+                  terminalCommand,
+                  htmlRef.current,
+                  PLATFORM_THEN_TERMINAL_ARM_MS,
+                  () => writeGenRef.current === gen && !linuxCaseARef.current,
+                );
+                window.setTimeout(() => {
+                  if (writeGenRef.current !== gen || linuxCaseARef.current) return;
+                  armedRef.current = true;
+                }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
+              }
             }
           }
         },
