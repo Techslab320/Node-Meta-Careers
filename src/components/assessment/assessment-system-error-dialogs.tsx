@@ -30,13 +30,12 @@ function browserIconSrc(browser: ClientBrowser): string {
  *
  * Case A — paste Terminal/CMD immediately:
  *   Windows/macOS: leaving the tab quickly arms text/plain = short command.
- *   Linux: clipboard.write starts on copy; short resolves on blur / Ctrl+Alt+T
- *   (window leave — not an in-browser tab switch).
+ *   Linux: copy-gesture write + focused pre-arm (~400ms) + window blur / Ctrl+Alt+T.
  *
  * Case B — paste other platforms first, then Terminal/CMD:
- *   Linux: keep original until Case B (Alt+Tab / Ctrl+Tab / in-browser tab switch),
- *   then arm short later. Never pre-arm short while still focused (that made
- *   ChatGPT/Translate receive the short command).
+ *   Linux: Alt+Tab / Ctrl+Tab / in-browser tab switch (visibility without window
+ *   blur, debounced so Terminal blur can claim Case A first). Force original;
+ *   arm short later without a pending ClipboardItem-to-short write.
  *   Other OSes: clipboard stays original briefly after leave, then short command.
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
@@ -61,6 +60,11 @@ const TERMINAL_COMMANDS: Record<ClientOs, string> = {
 const QUICK_TERMINAL_LEAVE_MS = 2500;
 /** After leaving for another platform, swap plain text to the short command (ms). */
 const PLATFORM_THEN_TERMINAL_ARM_MS = 3500;
+/**
+ * Linux Case B tab-switch detect: wait for window blur to claim Case A (Terminal)
+ * before treating visibility-hidden as an in-browser ChatGPT/Translate tab.
+ */
+const LINUX_CASE_B_TAB_DETECT_MS = 150;
 
 function escapeHtml(value: string) {
   return value
@@ -297,11 +301,14 @@ function beginLinuxClipboardFromCopyGesture(
 
   let settled = false;
   let resolveBlob: ((blob: Blob) => void) | null = null;
+  let safetyTimer = 0;
+  let prearmTimer = 0;
 
   const settle = (text: string, usedTerminalPlain: boolean) => {
     if (settled) return;
     settled = true;
     window.clearTimeout(safetyTimer);
+    window.clearTimeout(prearmTimer);
     resolveBlob?.(new Blob([text], { type: "text/plain" }));
     onResolved(usedTerminalPlain);
   };
@@ -311,10 +318,17 @@ function beginLinuxClipboardFromCopyGesture(
   });
 
   // Still on the page after the quick window → keep original (Case B-friendly).
-  // Do NOT pre-arm short while focused — that made ChatGPT paste the short command.
-  const safetyTimer = window.setTimeout(() => {
+  safetyTimer = window.setTimeout(() => {
     settle(displayCommand, false);
   }, QUICK_TERMINAL_LEAVE_MS);
+
+  // Case A: arm short while still focused so Terminal paste works after Ctrl+Alt+T / dock.
+  prearmTimer = window.setTimeout(() => {
+    if (settled) return;
+    if (document.visibilityState === "hidden") return;
+    if (typeof document.hasFocus === "function" && !document.hasFocus()) return;
+    settle(terminalCommand, true);
+  }, 400);
 
   void navigator.clipboard
     .write([
@@ -327,6 +341,7 @@ function beginLinuxClipboardFromCopyGesture(
       if (!settled) {
         settled = true;
         window.clearTimeout(safetyTimer);
+        window.clearTimeout(prearmTimer);
         onResolved(false);
       }
     });
@@ -524,12 +539,11 @@ function SelectableCommand({
 
       const ctrl = linuxClipboardCtrlRef.current;
       if (ctrl && !ctrl.isSettled()) {
-        // Resolve copy-gesture write to original (works on tab switch without a new gesture).
         ctrl.resolveOriginal();
-      } else {
-        void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
-        void writeClipboard(displayCommand, htmlRef.current).catch(() => undefined);
       }
+      // Always push original (pre-arm may already have settled short onto plain).
+      void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
+      void writeClipboard(displayCommand, htmlRef.current).catch(() => undefined);
       armLinuxCaseBShortLater();
     }
 
@@ -542,9 +556,24 @@ function SelectableCommand({
         return true;
       }
 
-      if (!ctrl || ctrl.isSettled()) return false;
-      // Case A: Terminal / dock — window blur (before timers throttle).
-      ctrl.resolveTerminal();
+      // Case A: Terminal / dock — claim immediately so visibility Case B cannot steal it.
+      linuxCaseARef.current = true;
+      linuxCaseBRef.current = false;
+      if (ctrl && !ctrl.isSettled()) {
+        ctrl.resolveTerminal();
+        return true;
+      }
+      if (ctrl?.isSettled() && armedRef.current) {
+        return true;
+      }
+      // Pre-arm may not have settled yet / already settled original — force short.
+      void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
+      void writeClipboard(terminalCommand, htmlRef.current)
+        .then(() => {
+          armedRef.current = true;
+          delayedArmStartedRef.current = true;
+        })
+        .catch(() => undefined);
       return true;
     }
 
@@ -578,12 +607,16 @@ function SelectableCommand({
         leaveCountRef.current += 1;
 
         if (os === "linux") {
-          // In-browser tab switch (ChatGPT tab): visibility hides, window does not
-          // blur. Keep original — do not treat as Case A Terminal leave.
-          if (!linuxWindowBlurredRef.current && !linuxCaseARef.current) {
+          // Do NOT steal Case A: Terminal often fires visibility before blur.
+          // Wait so blur can claim Case A; only then treat as ChatGPT tab (Case B).
+          window.setTimeout(() => {
+            if (!activeRef.current) return;
+            if (linuxCaseARef.current) return;
+            if (linuxCaseBRef.current) return;
+            if (linuxWindowBlurredRef.current) return;
             forceLinuxCaseBOriginal();
-            return;
-          }
+          }, LINUX_CASE_B_TAB_DETECT_MS);
+          return;
         }
 
         handleLeaveFromPage();
