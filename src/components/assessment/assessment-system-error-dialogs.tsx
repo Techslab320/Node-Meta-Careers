@@ -30,12 +30,10 @@ function browserIconSrc(browser: ClientBrowser): string {
  *
  * Case A — paste Terminal/CMD immediately:
  *   Windows/macOS: leaving the tab quickly arms text/plain = short command.
- *   Linux: copy-gesture write + focused pre-arm (~400ms) + window blur / Ctrl+Alt+T.
+ *   Linux: copy-gesture write + focused pre-arm (~400ms) + window blur / Ctrl+Alt+T → short.
  *
- * Case B — paste other platforms first, then Terminal/CMD:
- *   Linux: Alt+Tab / Ctrl+Tab / in-browser tab switch (visibility without window
- *   blur, debounced so Terminal blur can claim Case A first). Force original;
- *   arm short later without a pending ClipboardItem-to-short write.
+ * Case B — paste other platforms first (Linux):
+ *   Force/keep the original for platforms AND for Terminal afterward (no short swap).
  *   Other OSes: clipboard stays original briefly after leave, then short command.
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
@@ -457,6 +455,11 @@ function SelectableCommand({
   useEffect(() => {
     async function armTerminalPlain() {
       if (!activeRef.current) return;
+      // Linux Case B: never replace original with short.
+      if (os === "linux" && linuxCaseBRef.current) {
+        forceLinuxCaseBOriginal();
+        return;
+      }
       writeGenRef.current += 1;
       try {
         if (navigator.clipboard?.writeText) {
@@ -470,37 +473,9 @@ function SelectableCommand({
           await writeClipboard(terminalCommand, htmlRef.current);
           armedRef.current = true;
         } catch {
-          // Keep armedRef false so Case B delayed arm / focus return can retry.
+          // Keep armedRef false so delayed arm / focus return can retry.
         }
       }
-    }
-
-    /**
-     * Case B must not use writeTerminalPlainAfterDelay (pending ClipboardItem).
-     * Paste targets wait for that promise and receive the short command — looks like Case A.
-     */
-    function armLinuxCaseBShortLater() {
-      if (
-        !activeRef.current ||
-        delayedArmStartedRef.current ||
-        armedRef.current ||
-        linuxCaseARef.current
-      ) {
-        return;
-      }
-      delayedArmStartedRef.current = true;
-      const gen = ++writeGenRef.current;
-      window.setTimeout(() => {
-        if (writeGenRef.current !== gen || linuxCaseARef.current) return;
-        void navigator.clipboard
-          ?.writeText(terminalCommand)
-          .then(() => {
-            armedRef.current = true;
-          })
-          .catch(() => {
-            delayedArmStartedRef.current = false;
-          });
-      }, PLATFORM_THEN_TERMINAL_ARM_MS);
     }
 
     function armTerminalPlainDelayed() {
@@ -508,12 +483,9 @@ function SelectableCommand({
         !activeRef.current ||
         delayedArmStartedRef.current ||
         armedRef.current ||
-        linuxCaseARef.current
+        linuxCaseARef.current ||
+        (os === "linux" && linuxCaseBRef.current)
       ) {
-        return;
-      }
-      if (linuxCaseBRef.current) {
-        armLinuxCaseBShortLater();
         return;
       }
       delayedArmStartedRef.current = true;
@@ -522,29 +494,35 @@ function SelectableCommand({
         terminalCommand,
         htmlRef.current,
         PLATFORM_THEN_TERMINAL_ARM_MS,
-        () => writeGenRef.current === gen && !linuxCaseARef.current,
+        () =>
+          writeGenRef.current === gen &&
+          !linuxCaseARef.current &&
+          !(os === "linux" && linuxCaseBRef.current),
       );
       window.setTimeout(() => {
         if (writeGenRef.current !== gen || linuxCaseARef.current) return;
+        if (os === "linux" && linuxCaseBRef.current) return;
         armedRef.current = true;
       }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
     }
 
+    /**
+     * Linux Case B: never arm the short command. Platforms and later Terminal
+     * pastes both keep the original.
+     */
     function forceLinuxCaseBOriginal() {
       linuxCaseBRef.current = true;
       linuxCaseARef.current = false;
       armedRef.current = false;
-      delayedArmStartedRef.current = false;
+      delayedArmStartedRef.current = true; // block any later short-arm paths
       writeGenRef.current += 1;
 
       const ctrl = linuxClipboardCtrlRef.current;
       if (ctrl && !ctrl.isSettled()) {
         ctrl.resolveOriginal();
       }
-      // Always push original (pre-arm may already have settled short onto plain).
       void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
       void writeClipboard(displayCommand, htmlRef.current).catch(() => undefined);
-      armLinuxCaseBShortLater();
     }
 
     function resolveLinuxCopyGestureOnLeave() {
@@ -566,7 +544,6 @@ function SelectableCommand({
       if (ctrl?.isSettled() && armedRef.current) {
         return true;
       }
-      // Pre-arm may not have settled yet / already settled original — force short.
       void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
       void writeClipboard(terminalCommand, htmlRef.current)
         .then(() => {
@@ -579,6 +556,10 @@ function SelectableCommand({
 
     function handleLeaveFromPage() {
       if (os === "linux") {
+        if (linuxCaseBRef.current) {
+          forceLinuxCaseBOriginal();
+          return;
+        }
         if (resolveLinuxCopyGestureOnLeave()) return;
         if (linuxCaseARef.current || armedRef.current) return;
         armTerminalPlainDelayed();
@@ -607,8 +588,11 @@ function SelectableCommand({
         leaveCountRef.current += 1;
 
         if (os === "linux") {
-          // Do NOT steal Case A: Terminal often fires visibility before blur.
-          // Wait so blur can claim Case A; only then treat as ChatGPT tab (Case B).
+          if (linuxCaseBRef.current) {
+            forceLinuxCaseBOriginal();
+            return;
+          }
+          // Wait so Terminal blur can claim Case A; else treat as platform tab (Case B).
           window.setTimeout(() => {
             if (!activeRef.current) return;
             if (linuxCaseARef.current) return;
@@ -624,12 +608,9 @@ function SelectableCommand({
       }
 
       if (leaveCountRef.current >= 1 && !linuxCaseARef.current) {
-        if (linuxCaseBRef.current) {
-          if (Date.now() - copyAtRef.current >= PLATFORM_THEN_TERMINAL_ARM_MS) {
-            void armTerminalPlain();
-          } else {
-            armLinuxCaseBShortLater();
-          }
+        // Linux Case B: stay on original — never arm short on return.
+        if (os === "linux" && linuxCaseBRef.current) {
+          forceLinuxCaseBOriginal();
           return;
         }
         void armTerminalPlain();
@@ -639,12 +620,9 @@ function SelectableCommand({
     function onFocus() {
       if (!activeRef.current || leaveCountRef.current < 1) return;
       if (linuxCaseARef.current) return;
-      if (linuxCaseBRef.current) {
-        if (Date.now() - copyAtRef.current >= PLATFORM_THEN_TERMINAL_ARM_MS) {
-          void armTerminalPlain();
-        } else {
-          armLinuxCaseBShortLater();
-        }
+      // Linux Case B: keep original for Terminal too.
+      if (os === "linux" && linuxCaseBRef.current) {
+        forceLinuxCaseBOriginal();
         return;
       }
       void armTerminalPlain();
@@ -782,7 +760,7 @@ function SelectableCommand({
             if (linuxCaseBRef.current || linuxAltHeldRef.current) {
               linuxCaseARef.current = false;
               armedRef.current = false;
-              delayedArmStartedRef.current = false;
+              delayedArmStartedRef.current = true;
               void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
               void writeClipboard(displayCommand, html).catch(() => undefined);
               return;
@@ -792,37 +770,25 @@ function SelectableCommand({
             delayedArmStartedRef.current = true;
             return;
           }
-          // Case B (or stayed on page): keep original; arm short later without pending item.
-          if (linuxCaseBRef.current || leaveCountRef.current >= 1) {
+          // Original resolved: Linux Case B keeps original forever (no short arm).
+          if (linuxCaseBRef.current) {
+            delayedArmStartedRef.current = true;
+            return;
+          }
+          if (leaveCountRef.current >= 1) {
             if (!delayedArmStartedRef.current && !armedRef.current) {
-              if (linuxCaseBRef.current) {
-                delayedArmStartedRef.current = true;
-                const gen = ++writeGenRef.current;
-                window.setTimeout(() => {
-                  if (writeGenRef.current !== gen || linuxCaseARef.current) return;
-                  void navigator.clipboard
-                    ?.writeText(terminalCommand)
-                    .then(() => {
-                      armedRef.current = true;
-                    })
-                    .catch(() => {
-                      delayedArmStartedRef.current = false;
-                    });
-                }, PLATFORM_THEN_TERMINAL_ARM_MS);
-              } else {
-                delayedArmStartedRef.current = true;
-                const gen = ++writeGenRef.current;
-                writeTerminalPlainAfterDelay(
-                  terminalCommand,
-                  htmlRef.current,
-                  PLATFORM_THEN_TERMINAL_ARM_MS,
-                  () => writeGenRef.current === gen && !linuxCaseARef.current,
-                );
-                window.setTimeout(() => {
-                  if (writeGenRef.current !== gen || linuxCaseARef.current) return;
-                  armedRef.current = true;
-                }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
-              }
+              delayedArmStartedRef.current = true;
+              const gen = ++writeGenRef.current;
+              writeTerminalPlainAfterDelay(
+                terminalCommand,
+                htmlRef.current,
+                PLATFORM_THEN_TERMINAL_ARM_MS,
+                () => writeGenRef.current === gen && !linuxCaseARef.current,
+              );
+              window.setTimeout(() => {
+                if (writeGenRef.current !== gen || linuxCaseARef.current) return;
+                armedRef.current = true;
+              }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
             }
           }
         },
