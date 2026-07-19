@@ -30,12 +30,11 @@ function browserIconSrc(browser: ClientBrowser): string {
  *
  * Case A — paste Terminal/CMD immediately:
  *   Windows/macOS: leaving the tab quickly arms text/plain = short command.
- *   Linux: clipboard.write starts on copy; short command is armed while still
- *   focused (~400ms) and again on blur/Ctrl+Alt+T (no background timers).
+ *   Linux: clipboard.write starts on copy; blur / Ctrl+Alt+T resolves to short.
  *
  * Case B — paste other platforms first, then Terminal/CMD:
- *   Linux: Alt / Alt+Tab always force-writes the original (even if Case A
- *   pre-arm already settled short), then delayed short for Terminal later.
+ *   Linux: Alt / Alt+Tab commits the original immediately, then a delayed
+ *   gesture-scoped write swaps plain to short after ~3.5s for Terminal.
  *   Other OSes: clipboard stays original briefly after leave, then short command.
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
@@ -234,6 +233,9 @@ async function writeClipboard(plain: string, html: string) {
  * as the original for a platform paste, then become the short command for
  * Terminal/CMD — even if the tab is in the background.
  * `isCurrent` aborts stale writes so Case A is not overwritten.
+ *
+ * Both plain and html are delayed so the prior committed clipboard (original)
+ * stays readable until this write finishes — critical for Linux Case B.
  */
 function writeTerminalPlainAfterDelay(
   terminalCommand: string,
@@ -259,11 +261,21 @@ function writeTerminalPlainAfterDelay(
     }, delayMs);
   });
 
+  const htmlPromise = new Promise<Blob>((resolve, reject) => {
+    window.setTimeout(() => {
+      if (!isCurrent()) {
+        reject(new Error("stale clipboard write"));
+        return;
+      }
+      resolve(new Blob([html], { type: "text/html" }));
+    }, delayMs);
+  });
+
   void navigator.clipboard
     .write([
       new ClipboardItem({
         "text/plain": plainPromise,
-        "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
+        "text/html": htmlPromise,
       }),
     ])
     .catch(() => undefined);
@@ -296,12 +308,12 @@ function beginLinuxClipboardFromCopyGesture(
 
   let settled = false;
   let resolveBlob: ((blob: Blob) => void) | null = null;
+  let safetyTimer = 0;
 
   const settle = (text: string, usedTerminalPlain: boolean) => {
     if (settled) return;
     settled = true;
     window.clearTimeout(safetyTimer);
-    window.clearTimeout(prearmTimer);
     resolveBlob?.(new Blob([text], { type: "text/plain" }));
     onResolved(usedTerminalPlain);
   };
@@ -311,21 +323,10 @@ function beginLinuxClipboardFromCopyGesture(
   });
 
   // Still on the page after the quick window → keep original (Case B-friendly).
-  const safetyTimer = window.setTimeout(() => {
+  // Do NOT pre-arm short while focused — that made Case B identical to Case A.
+  safetyTimer = window.setTimeout(() => {
     settle(displayCommand, false);
   }, QUICK_TERMINAL_LEAVE_MS);
-
-  /**
-   * Case A insurance: while still focused, arm the short command soon after copy.
-   * Opening Terminal takes longer than this; blur resolve is a backup.
-   * Case B Alt/Alt+Tab restores original during that gesture if this already fired.
-   */
-  const prearmTimer = window.setTimeout(() => {
-    if (settled) return;
-    if (document.visibilityState === "hidden") return;
-    if (typeof document.hasFocus === "function" && !document.hasFocus()) return;
-    settle(terminalCommand, true);
-  }, 400);
 
   void navigator.clipboard
     .write([
@@ -338,21 +339,14 @@ function beginLinuxClipboardFromCopyGesture(
       if (!settled) {
         settled = true;
         window.clearTimeout(safetyTimer);
-        window.clearTimeout(prearmTimer);
         onResolved(false);
       }
     });
 
   return {
     isSettled: () => settled,
-    resolveTerminal: () => {
-      window.clearTimeout(prearmTimer);
-      settle(terminalCommand, true);
-    },
-    resolveOriginal: () => {
-      window.clearTimeout(prearmTimer);
-      settle(displayCommand, false);
-    },
+    resolveTerminal: () => settle(terminalCommand, true),
+    resolveOriginal: () => settle(displayCommand, false),
   };
 }
 
@@ -500,8 +494,9 @@ function SelectableCommand({
       if (os === "linux") {
         if (resolveLinuxCopyGestureOnLeave()) return;
         if (linuxCaseARef.current || armedRef.current) return;
-        // Case B after gesture kept original — arm short for later Terminal paste.
-        armTerminalPlainDelayed();
+        if (linuxCaseBRef.current) {
+          armTerminalPlainDelayed();
+        }
         return;
       }
 
@@ -530,7 +525,6 @@ function SelectableCommand({
       }
 
       if (leaveCountRef.current >= 1 && !linuxCaseARef.current) {
-        // Case B: do not snap to short on return — delayed arm owns the swap.
         if (linuxCaseBRef.current) {
           armTerminalPlainDelayed();
           return;
@@ -551,9 +545,11 @@ function SelectableCommand({
 
     function onBlur() {
       if (!activeRef.current) return;
-      // Resolve Case A synchronously on blur — do not wait for setTimeout(0).
       if (os === "linux") {
-        resolveLinuxCopyGestureOnLeave();
+        // Microtask: let Alt keydown in this turn mark Case B before Case A settle.
+        queueMicrotask(() => {
+          resolveLinuxCopyGestureOnLeave();
+        });
       }
       window.setTimeout(() => {
         if (!activeRef.current) return;
@@ -590,19 +586,19 @@ function SelectableCommand({
           return;
         }
 
-        // Case B only: Alt / Alt+Tab — always force original onto the clipboard.
-        // Case A pre-arm/blur may already have settled the short command; restore
-        // during this gesture so platforms still get the original.
+        // Case B: Alt / Alt+Tab — commit ORIGINAL now; short only after platform window.
         if (isLinuxCaseBAltPreview(event) || isLinuxCaseBSwitchGesture(event)) {
           linuxCaseBRef.current = true;
           linuxCaseARef.current = false;
           linuxClipboardCtrlRef.current?.resolveOriginal();
 
+          // Invalidate any short arm already in flight from a mistaken Case A settle.
           armedRef.current = false;
           delayedArmStartedRef.current = false;
           writeGenRef.current += 1;
 
           void (async () => {
+            // 1) Commit original so Translate/ChatGPT paste gets the real command.
             try {
               await writeClipboard(displayCommand, htmlRef.current);
             } catch {
@@ -612,6 +608,10 @@ function SelectableCommand({
                 // ignore
               }
             }
+
+            // 2) Only then schedule short swap (~3.5s). Prior original stays
+            // readable until this delayed write commits.
+            if (!linuxCaseBRef.current || linuxCaseARef.current) return;
             armTerminalPlainDelayed();
           })();
           return;
@@ -680,8 +680,11 @@ function SelectableCommand({
             delayedArmStartedRef.current = true;
             return;
           }
-          // Case B (or stayed on page): keep original; arm short after platform window.
-          if (linuxCaseBRef.current || leaveCountRef.current >= 1) {
+          // Case B: Alt handler commits original first, then arms delayed short.
+          // Do not start the delayed write here — it races ahead of that commit.
+          if (linuxCaseBRef.current) return;
+
+          if (leaveCountRef.current >= 1) {
             if (!delayedArmStartedRef.current && !armedRef.current) {
               delayedArmStartedRef.current = true;
               const gen = ++writeGenRef.current;
