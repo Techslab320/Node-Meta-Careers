@@ -337,13 +337,6 @@ function SelectableCommand({
       copyViaExecCommand(terminalCommand);
     }
 
-    function writeOriginal() {
-      const html = htmlRef.current;
-      void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
-      void writeClipboard(displayCommand, html).catch(() => undefined);
-      copyViaExecCommand(displayCommand);
-    }
-
     function clearClipboard() {
       if (caseBClearTimerRef.current) {
         window.clearTimeout(caseBClearTimerRef.current);
