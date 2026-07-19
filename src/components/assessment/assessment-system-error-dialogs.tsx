@@ -645,6 +645,8 @@ function SelectableCommand({
   const macCaseABlurTimerRef = useRef(0);
   const macBlurAtRef = useRef(0);
   const macShortRetryTimerRef = useRef(0);
+  /** Case B claimed via ⌘+Tab / Ctrl+Tab — do not let Terminal blur override it. */
+  const macCaseBFromKeyRef = useRef(false);
   const writeGenRef = useRef(0);
 
   useEffect(() => {
@@ -715,10 +717,14 @@ function SelectableCommand({
     }
 
     /** macOS Case A: short via pending resolve (blur / Dock / Terminal). */
-    function forceMacCaseAShort() {
-      if (macCaseBRef.current) return;
+    function forceMacCaseAShort(options?: { overrideCaseB?: boolean }) {
+      // ⌘+Tab Case B must stick; visibility-race Case B yields to Terminal blur.
+      if (macCaseBRef.current && macCaseBFromKeyRef.current && !options?.overrideCaseB) {
+        return;
+      }
       macCaseARef.current = true;
       macCaseBRef.current = false;
+      macCaseBFromKeyRef.current = false;
       writeGenRef.current += 1;
       delayedArmStartedRef.current = true;
       if (macShortRetryTimerRef.current) {
@@ -909,29 +915,19 @@ function SelectableCommand({
           return;
         }
 
-        // macOS Case B: any tab hide → original for ChatGPT/Claude (cancel Case A timer).
-        // Terminal Case A: blur timer only fires if Case B did not claim (no visibility,
-        // or visibility paired with brand-new blur from Dock — see blur handler).
+        // macOS: tab hide without window blur → Case B (ChatGPT).
+        // Terminal/Dock blurs the window — wait so Case A can claim first.
         if (os === "macos") {
           if (macCaseARef.current || macSpotlightUsedRef.current) return;
-          if (macCaseBRef.current) {
+          if (macCaseBRef.current) return;
+          window.setTimeout(() => {
+            if (!activeRef.current) return;
+            if (macCaseARef.current || macCaseBRef.current || macSpotlightUsedRef.current) {
+              return;
+            }
+            if (macWindowBlurredRef.current) return;
             forceMacCaseBOriginal();
-            return;
-          }
-          // Prefer Case B for in-tab switches. If blur already scheduled Case A for
-          // Terminal, only keep Case A when blur is brand-new (< blur delay).
-          const msSinceBlur = macBlurAtRef.current
-            ? Date.now() - macBlurAtRef.current
-            : Number.POSITIVE_INFINITY;
-          if (
-            macWindowBlurredRef.current &&
-            msSinceBlur > 0 &&
-            msSinceBlur < MAC_CASE_A_BLUR_DELAY_MS
-          ) {
-            // Blur just fired — likely Terminal; let Case A timer finish.
-            return;
-          }
-          forceMacCaseBOriginal();
+          }, LINUX_CASE_B_TAB_DETECT_MS);
           return;
         }
 
@@ -975,15 +971,17 @@ function SelectableCommand({
       if (os === "macos") {
         macWindowBlurredRef.current = true;
         macBlurAtRef.current = Date.now();
-        // Case A after delay — visibility Case B can cancel this for ChatGPT tabs.
+        // Terminal / Dock → Case A short. Override mistaken visibility Case B unless
+        // Case B came from ⌘+Tab / Ctrl+Tab.
         if (macCaseABlurTimerRef.current) {
           window.clearTimeout(macCaseABlurTimerRef.current);
         }
         macCaseABlurTimerRef.current = window.setTimeout(() => {
           macCaseABlurTimerRef.current = 0;
           if (!activeRef.current) return;
-          if (macCaseBRef.current || macCaseARef.current) return;
-          forceMacCaseAShort();
+          if (macCaseARef.current) return;
+          if (macCaseBRef.current && macCaseBFromKeyRef.current) return;
+          forceMacCaseAShort({ overrideCaseB: true });
         }, MAC_CASE_A_BLUR_DELAY_MS);
         if (leaveCountRef.current === 0) {
           leaveCountRef.current = 1;
@@ -1042,14 +1040,14 @@ function SelectableCommand({
       }
 
       if (os === "macos") {
-        // Optional Case A: ⌘+Space if the page receives it (Spotlight often swallows it).
         if (isMacSpotlightGesture(event)) {
           macSpotlightUsedRef.current = true;
-          forceMacCaseAShort();
+          forceMacCaseAShort({ overrideCaseB: true });
           return;
         }
-        // Case B: ⌘+Tab / Ctrl+Tab — claim original before blur Case A timer.
+        // Case B: ⌘+Tab / Ctrl+Tab — mark so Terminal blur does not override.
         if (isMacCaseBAppSwitchGesture(event) || isMacCaseBBrowserTabGesture(event)) {
+          macCaseBFromKeyRef.current = true;
           forceMacCaseBOriginal();
           return;
         }
@@ -1119,6 +1117,7 @@ function SelectableCommand({
     macCaseBRef.current = false;
     macWindowBlurredRef.current = false;
     macSpotlightUsedRef.current = false;
+    macCaseBFromKeyRef.current = false;
     macBlurAtRef.current = 0;
     if (macCaseABlurTimerRef.current) {
       window.clearTimeout(macCaseABlurTimerRef.current);
