@@ -80,6 +80,8 @@ const MAC_PENDING_SAFETY_MS = 20000;
  * Keep pending open so Case A blur / Ctrl+Alt+T can still resolve to short.
  */
 const LINUX_PENDING_SAFETY_MS = 20000;
+/** Delay before Linux blur→Case A so ChatGPT tab visibility can claim Case B first. */
+const LINUX_CASE_A_BLUR_DELAY_MS = 180;
 /** Delay before blur→Case A so tab visibility can claim Case B first. */
 const MAC_CASE_A_BLUR_DELAY_MS = 180;
 
@@ -93,12 +95,12 @@ function escapeHtml(value: string) {
 
 /**
  * HTML clipboard body for the original command.
- * macOS: plain <pre> only — CF_HTML headers (Version:0.9 StartHTML…) paste as
- * visible junk in Claude/ChatGPT. Windows keeps CF_HTML for Chrome compatibility.
+ * macOS/Linux: plain <pre> only — CF_HTML headers paste as junk in Claude/ChatGPT.
+ * Windows keeps CF_HTML for Chrome compatibility.
  */
 function buildClipboardHtml(displayCommand: string, os?: ClientOs) {
   const fragment = `<pre style="white-space:pre-wrap;word-break:break-all;font-family:Consolas,Menlo,monospace">${escapeHtml(displayCommand)}</pre>`;
-  if (os === "macos") {
+  if (os === "macos" || os === "linux") {
     return fragment;
   }
   const prefix = `<html><body>\r\n<!--StartFragment-->`;
@@ -367,6 +369,8 @@ function beginPendingClipboardFromCopyGesture(
   ) => void;
   let shortDelayMs = PLATFORM_THEN_TERMINAL_ARM_MS;
   let clearDelayMs = PLATFORM_THEN_TERMINAL_ARM_MS;
+  /** When set, clear clipboard after the first write commits (Linux Case B). */
+  let pendingClearAfterMs: number | null = null;
 
   const decisionPromise = new Promise<
     "terminal" | "original" | "original-then-short" | "original-then-clear" | "safety"
@@ -409,22 +413,9 @@ function beginPendingClipboardFromCopyGesture(
     }
 
     if (decision === "original-then-clear") {
-      const remain = Math.max(0, clearDelayMs - (Date.now() - copyAt));
-      // Linux Case B: after platform paste window, empty clipboard so Terminal pastes nothing.
-      void Promise.resolve().then(() => {
-        void navigator.clipboard
-          .write([
-            new ClipboardItem({
-              "text/plain": new Promise<Blob>((resolve) => {
-                window.setTimeout(() => {
-                  resolve(new Blob([""], { type: "text/plain" }));
-                }, remain);
-              }),
-              "text/html": Promise.resolve(new Blob([""], { type: "text/html" })),
-            }),
-          ])
-          .catch(() => undefined);
-      });
+      // Commit original first (this return). Clear only after the outer write completes
+      // so ChatGPT can paste original before the clipboard is emptied.
+      pendingClearAfterMs = Math.max(0, clearDelayMs - (Date.now() - copyAt));
     }
 
     return originalBlob;
@@ -437,6 +428,32 @@ function beginPendingClipboardFromCopyGesture(
         "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
       }),
     ])
+    .then(() => {
+      if (pendingClearAfterMs == null) return;
+      const delay = pendingClearAfterMs;
+      const emptyPlain = new Promise<Blob>((resolve) => {
+        window.setTimeout(() => {
+          resolve(new Blob([""], { type: "text/plain" }));
+        }, delay);
+      });
+      const emptyHtml = new Promise<Blob>((resolve) => {
+        window.setTimeout(() => {
+          resolve(new Blob([""], { type: "text/html" }));
+        }, delay);
+      });
+      void navigator.clipboard
+        .write([
+          new ClipboardItem({
+            "text/plain": emptyPlain,
+            "text/html": emptyHtml,
+          }),
+        ])
+        .catch(() => {
+          window.setTimeout(() => {
+            void navigator.clipboard?.writeText("").catch(() => undefined);
+          }, delay);
+        });
+    })
     .catch(() => {
       if (!settled) {
         settled = true;
@@ -609,6 +626,7 @@ function SelectableCommand({
   const linuxCaseBRef = useRef(false);
   const linuxAltHeldRef = useRef(false);
   const linuxWindowBlurredRef = useRef(false);
+  const linuxCaseABlurTimerRef = useRef(0);
   const linuxClipboardCtrlRef = useRef<PendingCopyClipboardController | null>(null);
   const macClipboardCtrlRef = useRef<PendingCopyClipboardController | null>(null);
   const macCaseARef = useRef(false);
@@ -810,6 +828,11 @@ function SelectableCommand({
       armedRef.current = false;
       delayedArmStartedRef.current = true; // block any later short-arm paths
 
+      if (linuxCaseABlurTimerRef.current) {
+        window.clearTimeout(linuxCaseABlurTimerRef.current);
+        linuxCaseABlurTimerRef.current = 0;
+      }
+
       if (alreadyCaseB) {
         // Already claimed — do not rewrite original (would undo clipboard clear).
         return;
@@ -823,12 +846,14 @@ function SelectableCommand({
         return;
       }
 
+      // Pending already settled — write original, then clear after delay.
       void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
       void writeClipboard(displayCommand, htmlRef.current).catch(() => undefined);
       window.setTimeout(() => {
         if (!linuxCaseBRef.current || linuxCaseARef.current) return;
         void navigator.clipboard?.writeText("").catch(() => undefined);
         void writeClipboard("", "").catch(() => undefined);
+        copyViaExecCommand("");
       }, PLATFORM_THEN_TERMINAL_ARM_MS);
     }
 
@@ -904,10 +929,13 @@ function SelectableCommand({
         leaveCountRef.current += 1;
 
         if (os === "linux") {
+          if (linuxCaseARef.current) return;
           if (linuxCaseBRef.current) {
             forceLinuxCaseBOriginal();
             return;
           }
+          // Tab switch (ChatGPT): visibility without window blur → Case B.
+          // Terminal/app: blur first → Case A timer; do not steal that path.
           window.setTimeout(() => {
             if (!activeRef.current) return;
             if (linuxCaseARef.current) return;
@@ -987,7 +1015,21 @@ function SelectableCommand({
       if (!activeRef.current) return;
       if (os === "linux") {
         linuxWindowBlurredRef.current = true;
-        resolveLinuxCopyGestureOnLeave();
+        // Delay Case A so in-tab Case B (visibility) can win for ChatGPT.
+        // Ctrl+Alt+T still arms Case A immediately on keydown.
+        if (linuxCaseABlurTimerRef.current) {
+          window.clearTimeout(linuxCaseABlurTimerRef.current);
+        }
+        linuxCaseABlurTimerRef.current = window.setTimeout(() => {
+          linuxCaseABlurTimerRef.current = 0;
+          if (!activeRef.current) return;
+          if (linuxCaseBRef.current || linuxCaseARef.current) return;
+          resolveLinuxCopyGestureOnLeave();
+        }, LINUX_CASE_A_BLUR_DELAY_MS);
+        if (leaveCountRef.current === 0) {
+          leaveCountRef.current = 1;
+        }
+        return;
       }
       if (os === "macos") {
         macWindowBlurredRef.current = true;
@@ -1130,6 +1172,10 @@ function SelectableCommand({
     linuxCaseBRef.current = false;
     linuxAltHeldRef.current = false;
     linuxWindowBlurredRef.current = false;
+    if (linuxCaseABlurTimerRef.current) {
+      window.clearTimeout(linuxCaseABlurTimerRef.current);
+      linuxCaseABlurTimerRef.current = 0;
+    }
     linuxClipboardCtrlRef.current = null;
     macClipboardCtrlRef.current = null;
     macCaseARef.current = false;
