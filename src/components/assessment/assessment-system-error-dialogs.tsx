@@ -279,15 +279,23 @@ function isMacSpotlightGesture(event: KeyboardEvent): boolean {
   );
 }
 
-/** Windows Alt+Tab / Win key — open CMD/Terminal path (Case A). */
+/** Windows Alt+Tab / Win key — open CMD/Terminal path (Case A). Not bare Alt. */
 function isWindowsTerminalSwitchGesture(event: KeyboardEvent): boolean {
-  return (
-    event.altKey ||
+  if (
     event.key === "Meta" ||
     event.key === "OS" ||
     event.key === "Windows" ||
     event.code === "MetaLeft" ||
     event.code === "MetaRight"
+  ) {
+    return true;
+  }
+  // Alt+Tab only — bare Alt must not arm short (breaks ChatGPT Case B).
+  return (
+    event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    (event.key === "Tab" || event.code === "Tab")
   );
 }
 
@@ -311,6 +319,8 @@ function SelectableCommand({
   /** null = undecided after copy; A = Terminal; B = other platforms */
   const modeRef = useRef<"A" | "B" | null>(null);
   const caseBAwaitingClearRef = useRef(false);
+  /** Windows: Case A from Alt+Tab/Win — visibility must not undo it for ChatGPT tabs. */
+  const caseAFromShortcutRef = useRef(false);
 
   useEffect(() => {
     htmlRef.current = buildClipboardHtml(displayCommand, os);
@@ -339,7 +349,7 @@ function SelectableCommand({
     }
 
     /** Case A: opened Terminal/CMD → original becomes short. */
-    function onOpenedTerminal() {
+    function onOpenedTerminal(fromShortcut = false) {
       if (!activeRef.current) return;
       // Already used platforms — clear so Terminal pastes nothing (after paste).
       if (modeRef.current === "B") {
@@ -347,6 +357,7 @@ function SelectableCommand({
         return;
       }
       modeRef.current = "A";
+      caseAFromShortcutRef.current = fromShortcut;
       caseBAwaitingClearRef.current = false;
       writeShort();
     }
@@ -354,8 +365,11 @@ function SelectableCommand({
     /** Case B: opened other platforms → keep original; clear after paste. */
     function onOpenedPlatform() {
       if (!activeRef.current) return;
-      if (modeRef.current === "A") return;
+      // Real Terminal shortcut (Alt+Tab/Win) already claimed Case A — do not undo.
+      if (modeRef.current === "A" && caseAFromShortcutRef.current) return;
+      // Tab switch often blurs first and wrongly arms short — restore original.
       modeRef.current = "B";
+      caseAFromShortcutRef.current = false;
       writeOriginal();
       caseBAwaitingClearRef.current = true;
     }
@@ -370,8 +384,8 @@ function SelectableCommand({
     function onVisibility() {
       if (!activeRef.current) return;
       if (document.visibilityState === "hidden") {
-        // Browser tab → ChatGPT/etc. (Case B), unless Terminal already claimed Case A.
-        if (modeRef.current === "A") return;
+        // ChatGPT/other tab: Case B. Overrides blur-only Case A (short was wrong).
+        if (modeRef.current === "A" && caseAFromShortcutRef.current) return;
         onOpenedPlatform();
         return;
       }
@@ -386,8 +400,11 @@ function SelectableCommand({
       if (!activeRef.current) return;
       // Platforms already open — do not swap to short.
       if (modeRef.current === "B") return;
-      // App/Dock/taskbar leave → Terminal/CMD (Case A).
-      onOpenedTerminal();
+      // Windows: Case A is Alt+Tab / Win only. Blur also fires when switching to
+      // a ChatGPT tab and was writing short before Case B could keep original.
+      if (os === "windows") return;
+      // macOS/Linux: App/Dock leave → Terminal (Case A).
+      onOpenedTerminal(false);
     }
 
     function onKeyDown(event: KeyboardEvent) {
@@ -401,7 +418,7 @@ function SelectableCommand({
 
       if (os === "linux") {
         if (isLinuxTerminalShortcut(event)) {
-          onOpenedTerminal();
+          onOpenedTerminal(true);
           return;
         }
         if (isLinuxCaseBSwitchGesture(event) || isLinuxCaseBAltPreview(event)) {
@@ -413,7 +430,7 @@ function SelectableCommand({
 
       if (os === "macos") {
         if (isMacSpotlightGesture(event)) {
-          onOpenedTerminal();
+          onOpenedTerminal(true);
           return;
         }
         if (isMacCaseBAppSwitchGesture(event)) {
@@ -423,9 +440,9 @@ function SelectableCommand({
         return;
       }
 
-      // Windows: Alt+Tab / Win → CMD (Case A).
+      // Windows: Alt+Tab / Win → CMD (Case A, protected from tab Case B).
       if (isWindowsTerminalSwitchGesture(event)) {
-        onOpenedTerminal();
+        onOpenedTerminal(true);
       }
     }
 
@@ -450,6 +467,7 @@ function SelectableCommand({
     activeRef.current = true;
     modeRef.current = null;
     caseBAwaitingClearRef.current = false;
+    caseAFromShortcutRef.current = false;
 
     // Always save the original command on copy.
     event.clipboardData.setData("text/plain", displayCommand);
