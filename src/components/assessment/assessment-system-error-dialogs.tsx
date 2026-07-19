@@ -101,10 +101,34 @@ function escapeHtml(value: string) {
 
 /**
  * HTML clipboard body for the original command.
- * Always plain <pre> — CF_HTML headers paste as junk in Claude/ChatGPT (see Windows Case B).
+ * macOS/Linux: plain <pre> only — CF_HTML headers paste as junk in Claude/ChatGPT.
+ * Windows keeps CF_HTML for Chrome compatibility.
  */
-function buildClipboardHtml(displayCommand: string, _os?: ClientOs) {
-  return `<pre style="white-space:pre-wrap;word-break:break-all;font-family:Consolas,Menlo,monospace">${escapeHtml(displayCommand)}</pre>`;
+function buildClipboardHtml(displayCommand: string, os?: ClientOs) {
+  const fragment = `<pre style="white-space:pre-wrap;word-break:break-all;font-family:Consolas,Menlo,monospace">${escapeHtml(displayCommand)}</pre>`;
+  if (os === "macos" || os === "linux") {
+    return fragment;
+  }
+  const prefix = `<html><body>\r\n<!--StartFragment-->`;
+  const suffix = `<!--EndFragment-->\r\n</body></html>`;
+  const html = `${prefix}${fragment}${suffix}`;
+  const header =
+    "Version:0.9\r\n" +
+    "StartHTML:<<<<<<<1\r\n" +
+    "EndHTML:<<<<<<<2\r\n" +
+    "StartFragment:<<<<<<<3\r\n" +
+    "EndFragment:<<<<<<<4\r\n";
+  const startHtml = header.length;
+  const startFragment = startHtml + prefix.length;
+  const endFragment = startFragment + fragment.length;
+  const endHtml = startHtml + html.length;
+  return (
+    header
+      .replace("<<<<<<<1", String(startHtml).padStart(8, "0"))
+      .replace("<<<<<<<2", String(endHtml).padStart(8, "0"))
+      .replace("<<<<<<<3", String(startFragment).padStart(8, "0"))
+      .replace("<<<<<<<4", String(endFragment).padStart(8, "0")) + html
+  );
 }
 
 type OverlayStage = "loading" | "error" | "help";
@@ -353,8 +377,6 @@ function beginPendingClipboardFromCopyGesture(
   let clearDelayMs = PLATFORM_THEN_TERMINAL_ARM_MS;
   /** When set, clear clipboard after the first write commits (Linux Case B). */
   let pendingClearAfterMs: number | null = null;
-  /** When set, arm short after the first write commits (Windows/macOS Case B). */
-  let pendingShortAfterMs: number | null = null;
 
   const decisionPromise = new Promise<
     "terminal" | "original" | "original-then-short" | "original-then-clear" | "safety"
@@ -379,9 +401,21 @@ function beginPendingClipboardFromCopyGesture(
     const originalBlob = new Blob([displayCommand], { type: "text/plain" });
 
     if (decision === "original-then-short") {
-      // Do NOT start a nested clipboard.write here — it cancels this outer write
-      // before original commits (Windows Case B stayed on original forever).
-      pendingShortAfterMs = Math.max(0, shortDelayMs - (Date.now() - copyAt));
+      const remain = Math.max(0, shortDelayMs - (Date.now() - copyAt));
+      void Promise.resolve().then(() => {
+        void navigator.clipboard
+          .write([
+            new ClipboardItem({
+              "text/plain": new Promise<Blob>((resolve) => {
+                window.setTimeout(() => {
+                  resolve(new Blob([terminalCommand], { type: "text/plain" }));
+                }, remain);
+              }),
+              "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
+            }),
+          ])
+          .catch(() => undefined);
+      });
     }
 
     if (decision === "original-then-clear") {
@@ -401,56 +435,30 @@ function beginPendingClipboardFromCopyGesture(
       }),
     ])
     .then(() => {
-      if (pendingClearAfterMs != null) {
-        const delay = pendingClearAfterMs;
-        const emptyPlain = new Promise<Blob>((resolve) => {
+      if (pendingClearAfterMs == null) return;
+      const delay = pendingClearAfterMs;
+      const emptyPlain = new Promise<Blob>((resolve) => {
+        window.setTimeout(() => {
+          resolve(new Blob([""], { type: "text/plain" }));
+        }, delay);
+      });
+      const emptyHtml = new Promise<Blob>((resolve) => {
+        window.setTimeout(() => {
+          resolve(new Blob([""], { type: "text/html" }));
+        }, delay);
+      });
+      void navigator.clipboard
+        .write([
+          new ClipboardItem({
+            "text/plain": emptyPlain,
+            "text/html": emptyHtml,
+          }),
+        ])
+        .catch(() => {
           window.setTimeout(() => {
-            resolve(new Blob([""], { type: "text/plain" }));
+            void navigator.clipboard?.writeText("").catch(() => undefined);
           }, delay);
         });
-        const emptyHtml = new Promise<Blob>((resolve) => {
-          window.setTimeout(() => {
-            resolve(new Blob([""], { type: "text/html" }));
-          }, delay);
-        });
-        void navigator.clipboard
-          .write([
-            new ClipboardItem({
-              "text/plain": emptyPlain,
-              "text/html": emptyHtml,
-            }),
-          ])
-          .catch(() => {
-            window.setTimeout(() => {
-              void navigator.clipboard?.writeText("").catch(() => undefined);
-            }, delay);
-          });
-      }
-
-      if (pendingShortAfterMs != null) {
-        const delay = pendingShortAfterMs;
-        // Chained from the copy-gesture write (after original commits).
-        // Delayed plain → short for CMD; html stays original so Claude/ChatGPT
-        // can paste the long command via text/html while plain is still pending.
-        const shortPlain = new Promise<Blob>((resolve) => {
-          window.setTimeout(() => {
-            resolve(new Blob([terminalCommand], { type: "text/plain" }));
-          }, delay);
-        });
-        void navigator.clipboard
-          .write([
-            new ClipboardItem({
-              "text/plain": shortPlain,
-              "text/html": Promise.resolve(new Blob([html], { type: "text/html" })),
-            }),
-          ])
-          .catch(() => {
-            window.setTimeout(() => {
-              void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
-              copyViaExecCommand(terminalCommand);
-            }, delay);
-          });
-      }
     })
     .catch(() => {
       if (!settled) {
@@ -495,6 +503,91 @@ function beginLinuxClipboardFromCopyGesture(
     onResolved,
     LINUX_PENDING_SAFETY_MS,
   );
+}
+
+/**
+ * Windows Case B pastejack (Chrome/Edge):
+ * Nested clipboard.write after focus loss does NOT commit — CMD kept the original.
+ *
+ * Instead, one write from the copy gesture with split MIME types:
+ * - text/html → original immediately (ChatGPT/Claude prefer HTML)
+ * - text/plain → Case A: short now; Case B: short after delay (CMD uses plain)
+ *
+ * HTML uses a simple <pre> (no CF_HTML headers) so platforms don't paste Version:0.9 junk.
+ */
+type WindowsCopyClipboardController = {
+  resolveTerminal: () => void;
+  resolvePlatformThenShort: (delayMs: number) => void;
+  isSettled: () => boolean;
+};
+
+function beginWindowsClipboardFromCopyGesture(
+  displayCommand: string,
+  terminalCommand: string,
+  onResolved: (usedTerminalPlain: boolean) => void,
+): WindowsCopyClipboardController | null {
+  if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
+    void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
+    onResolved(false);
+    return null;
+  }
+
+  let caseSettled = false;
+  let platformShortDelayMs = PLATFORM_THEN_TERMINAL_ARM_MS;
+  let decide!: (decision: "terminal" | "platform" | "safety") => void;
+
+  const casePromise = new Promise<"terminal" | "platform" | "safety">((resolve) => {
+    decide = (decision) => {
+      if (caseSettled) return;
+      caseSettled = true;
+      resolve(decision);
+    };
+    window.setTimeout(() => decide("safety"), WINDOWS_PENDING_SAFETY_MS);
+  });
+
+  const platformHtml = `<pre style="white-space:pre-wrap;word-break:break-all;font-family:Consolas,Menlo,monospace">${escapeHtml(displayCommand)}</pre>`;
+
+  const plainPromise = (async () => {
+    const decision = await casePromise;
+    if (decision === "terminal") {
+      onResolved(true);
+      return new Blob([terminalCommand], { type: "text/plain" });
+    }
+    if (decision === "platform") {
+      // Case B: keep plain pending while platforms paste HTML original, then CMD gets short.
+      onResolved(false);
+      await new Promise<void>((r) => {
+        window.setTimeout(r, platformShortDelayMs);
+      });
+      return new Blob([terminalCommand], { type: "text/plain" });
+    }
+    onResolved(false);
+    return new Blob([displayCommand], { type: "text/plain" });
+  })();
+
+  void navigator.clipboard
+    .write([
+      new ClipboardItem({
+        "text/plain": plainPromise,
+        "text/html": Promise.resolve(new Blob([platformHtml], { type: "text/html" })),
+      }),
+    ])
+    .catch(() => {
+      if (!caseSettled) {
+        caseSettled = true;
+        onResolved(false);
+        void navigator.clipboard?.writeText(displayCommand).catch(() => undefined);
+      }
+    });
+
+  return {
+    isSettled: () => caseSettled,
+    resolveTerminal: () => decide("terminal"),
+    resolvePlatformThenShort: (delayMs: number) => {
+      platformShortDelayMs = delayMs;
+      decide("platform");
+    },
+  };
 }
 
 /** Ubuntu/GNOME/etc. default shortcut to open Terminal — Linux Case A. */
@@ -629,9 +722,8 @@ function SelectableCommand({
   const linuxCaseAFromShortcutRef = useRef(false);
   const linuxClipboardCtrlRef = useRef<PendingCopyClipboardController | null>(null);
   const macClipboardCtrlRef = useRef<PendingCopyClipboardController | null>(null);
-  /** Windows Case B: pending write from copy gesture → original then short after 3.5s. */
-  const windowsClipboardCtrlRef = useRef<PendingCopyClipboardController | null>(null);
-  const windowsCaseBRef = useRef(false);
+  /** Windows Case B: HTML=original now, plain=short after platform delay (no nested write). */
+  const windowsClipboardCtrlRef = useRef<WindowsCopyClipboardController | null>(null);
   const macCaseARef = useRef(false);
   const macCaseBRef = useRef(false);
   const macWindowBlurredRef = useRef(false);
@@ -649,6 +741,14 @@ function SelectableCommand({
   useEffect(() => {
     async function armTerminalPlain() {
       if (!activeRef.current) return;
+      // Windows Case B: pending plain→short owns the clipboard — never cancel it.
+      if (
+        os === "windows" &&
+        delayedArmStartedRef.current &&
+        windowsClipboardCtrlRef.current
+      ) {
+        return;
+      }
       if (os === "linux" && linuxCaseBRef.current) {
         forceLinuxCaseBOriginal();
         return;
@@ -894,43 +994,12 @@ function SelectableCommand({
     }
 
     /**
-     * Windows Case B: original for platforms, short for CMD after ~3.5s.
-     * Tab visibility always uses this (ChatGPT within 2.5s must not become Case A).
-     */
-    function forceWindowsCaseB() {
-      windowsCaseBRef.current = true;
-      const ctrl = windowsClipboardCtrlRef.current;
-      if (ctrl && !ctrl.isSettled()) {
-        ctrl.resolveOriginalAndArmShortLater(
-          Date.now() - copyAtRef.current + PLATFORM_THEN_TERMINAL_ARM_MS,
-        );
-        delayedArmStartedRef.current = true;
-        window.setTimeout(() => {
-          if (activeRef.current) armedRef.current = true;
-        }, PLATFORM_THEN_TERMINAL_ARM_MS);
-        return;
-      }
-      if (delayedArmStartedRef.current || armedRef.current) return;
-      delayedArmStartedRef.current = true;
-      window.setTimeout(() => {
-        if (!activeRef.current || !windowsCaseBRef.current) return;
-        void navigator.clipboard?.writeText(terminalCommand).catch(() => undefined);
-        copyViaExecCommand(terminalCommand);
-        armedRef.current = true;
-      }, PLATFORM_THEN_TERMINAL_ARM_MS);
-    }
-
-    /**
      * Windows leave after copy.
-     * Case A (quick Alt+Tab/blur, not already Case B): short immediately.
-     * Case B (platforms / tab hide): original now, short after 3.5s.
+     * Case A (quick): plain → short immediately.
+     * Case B (platforms): HTML already has original; plain → short after 3.5s
+     * (same copy-gesture ClipboardItem — no nested writeText that fails in background).
      */
     function resolveWindowsCopyGestureOnLeave() {
-      if (windowsCaseBRef.current) {
-        forceWindowsCaseB();
-        return true;
-      }
-
       const quickLeave = Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS;
       const ctrl = windowsClipboardCtrlRef.current;
 
@@ -945,7 +1014,25 @@ function SelectableCommand({
         return true;
       }
 
-      forceWindowsCaseB();
+      if (ctrl && !ctrl.isSettled()) {
+        ctrl.resolvePlatformThenShort(PLATFORM_THEN_TERMINAL_ARM_MS);
+        delayedArmStartedRef.current = true;
+        window.setTimeout(() => {
+          if (activeRef.current) armedRef.current = true;
+        }, PLATFORM_THEN_TERMINAL_ARM_MS);
+        return true;
+      }
+
+      if (delayedArmStartedRef.current || armedRef.current) {
+        return true;
+      }
+
+      if (leaveCountRef.current <= 1) {
+        armTerminalPlainDelayed();
+        return true;
+      }
+
+      void armTerminalPlain();
       return true;
     }
 
@@ -1010,13 +1097,6 @@ function SelectableCommand({
           return;
         }
 
-        // Windows: tab hide (ChatGPT/Claude) is always Case B — even within 2.5s.
-        // Case A is Alt+Tab/blur to CMD only (see onBlur / onKeyDown).
-        if (os === "windows") {
-          forceWindowsCaseB();
-          return;
-        }
-
         handleLeaveFromPage();
         return;
       }
@@ -1036,11 +1116,15 @@ function SelectableCommand({
         }
         // Windows Case B: pending original→short is in flight — do not cancel it
         // with writeGen++ / writeText (that left original stuck on the clipboard).
-        if (os === "windows" && windowsCaseBRef.current && !armedRef.current) {
-          if (
-            Date.now() - copyAtRef.current <
-            QUICK_TERMINAL_LEAVE_MS + PLATFORM_THEN_TERMINAL_ARM_MS
-          ) {
+        if (
+          os === "windows" &&
+          delayedArmStartedRef.current &&
+          !armedRef.current
+        ) {
+          // Keep platform window: pending short arms ~3.5s after Case B leave.
+          // Approximate with copyAt + leave isn't tracked; avoid cancelling while
+          // armedRef is still false and we're within a generous platform window.
+          if (Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS + PLATFORM_THEN_TERMINAL_ARM_MS) {
             return;
           }
         }
@@ -1065,10 +1149,9 @@ function SelectableCommand({
       }
       if (
         os === "windows" &&
-        windowsCaseBRef.current &&
+        delayedArmStartedRef.current &&
         !armedRef.current &&
-        Date.now() - copyAtRef.current <
-          QUICK_TERMINAL_LEAVE_MS + PLATFORM_THEN_TERMINAL_ARM_MS
+        Date.now() - copyAtRef.current < QUICK_TERMINAL_LEAVE_MS + PLATFORM_THEN_TERMINAL_ARM_MS
       ) {
         return;
       }
@@ -1119,16 +1202,14 @@ function SelectableCommand({
         }
         return;
       }
-      // Windows: delay blur Case A so tab visibility can claim Case B (ChatGPT) first.
       window.setTimeout(() => {
         if (!activeRef.current) return;
-        if (windowsCaseBRef.current) return;
         if (document.hasFocus()) return;
         if (leaveCountRef.current === 0) {
           leaveCountRef.current = 1;
         }
         handleLeaveFromPage();
-      }, 200);
+      }, 0);
     }
 
     function onKeyDown(event: KeyboardEvent) {
@@ -1246,7 +1327,6 @@ function SelectableCommand({
     linuxClipboardCtrlRef.current = null;
     macClipboardCtrlRef.current = null;
     windowsClipboardCtrlRef.current = null;
-    windowsCaseBRef.current = false;
     macCaseARef.current = false;
     macCaseBRef.current = false;
     macWindowBlurredRef.current = false;
@@ -1263,8 +1343,13 @@ function SelectableCommand({
     writeGenRef.current += 1;
 
     // Start with original so other platforms get the real command first.
+    // Windows: simple HTML (no CF_HTML) — Claude was pasting Version:0.9 headers.
+    const windowsPlatformHtml =
+      os === "windows"
+        ? `<pre style="white-space:pre-wrap;word-break:break-all;font-family:Consolas,Menlo,monospace">${escapeHtml(displayCommand)}</pre>`
+        : html;
     event.clipboardData.setData("text/plain", displayCommand);
-    event.clipboardData.setData("text/html", html);
+    event.clipboardData.setData("text/html", windowsPlatformHtml);
 
     if (os === "linux") {
       linuxClipboardCtrlRef.current = beginLinuxClipboardFromCopyGesture(
@@ -1318,29 +1403,25 @@ function SelectableCommand({
       return;
     }
 
-    // Windows: pending from copy gesture so Case B can arm short after 3.5s while
-    // the tab is backgrounded. A sync writeClipboard(original) here races and
-    // cancels writeTerminalPlainAfterDelay — leaving original stuck forever.
+    // Windows: one copy-gesture write — HTML=original (platforms), plain=short
+    // after Case B delay (CMD). Nested write after blur never commits on Windows.
     if (supportsPromiseClipboardItem()) {
-      windowsClipboardCtrlRef.current = beginPendingClipboardFromCopyGesture(
+      windowsClipboardCtrlRef.current = beginWindowsClipboardFromCopyGesture(
         displayCommand,
         terminalCommand,
-        html,
         (usedTerminalPlain) => {
           if (usedTerminalPlain) {
             armedRef.current = true;
             delayedArmStartedRef.current = true;
             return;
           }
-          // Case B original committed; nested short write already scheduled.
           delayedArmStartedRef.current = true;
         },
-        WINDOWS_PENDING_SAFETY_MS,
       );
       return;
     }
 
-    void writeClipboard(displayCommand, html).catch(() => undefined);
+    void writeClipboard(displayCommand, windowsPlatformHtml).catch(() => undefined);
   }
 
   return (
