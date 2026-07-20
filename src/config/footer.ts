@@ -65,4 +65,4 @@ export const footerSocialLinks = [
   },
 ] as const;
 
-export const footerContactEmail = "business@node-meta.com";
+export const footerContactEmail = "careers@node-meta.careers";

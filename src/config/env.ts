@@ -90,6 +90,8 @@ const envSchema = z.object({
   TURNSTILE_SECRET_KEY: optionalString,
   GROQ_API_KEY: optionalString,
   OPENAI_API_KEY: optionalString,
+  TELEGRAM_BOT_TOKEN: optionalString,
+  TELEGRAM_CHAT_ID: optionalString,
   DUPLICATE_APPLICATION_HOURS: z.coerce.number().positive().default(24),
   NODE_ENV: z
     .enum(["development", "production", "test"])
@@ -127,6 +129,11 @@ export function isEmailEnabled(): boolean {
       env.RECRUITMENT_FROM_EMAIL &&
       env.RECRUITMENT_NOTIFICATION_EMAIL,
   );
+}
+
+export function isTelegramNotifyEnabled(): boolean {
+  const env = getEnv();
+  return Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID);
 }
 
 export function getAuthSecret(): string {

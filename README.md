@@ -56,6 +56,8 @@ Copy `.env.example` to `.env.local` and configure:
 | `TURNSTILE_SITE_KEY` | Optional Cloudflare Turnstile site key |
 | `TURNSTILE_SECRET_KEY` | Optional Cloudflare Turnstile secret key |
 | `DUPLICATE_APPLICATION_HOURS` | Hours before duplicate applications are blocked (default: 24) |
+| `TELEGRAM_BOT_TOKEN` | Optional Telegram bot token for visitor alerts (server-only) |
+| `TELEGRAM_CHAT_ID` | Optional Telegram chat/channel id that receives visitor alerts |
 
 ## MongoDB Atlas Setup
 

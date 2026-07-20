@@ -5,6 +5,7 @@ import { usePathname, useSearchParams } from "next/navigation";
 import { Header } from "@/components/layout/header";
 import { Footer } from "@/components/layout/footer";
 import { CursorFollower } from "@/components/layout/cursor-follower";
+import { VisitBeacon } from "@/components/layout/visit-beacon";
 import { isAdminPagePath } from "@/config/admin";
 import { isAssessmentRole } from "@/data/assessments";
 
@@ -41,11 +42,17 @@ function SiteChromeInner({ children }: { children: React.ReactNode }) {
   }, [isInterviewRoomRoute]);
 
   if (hideSiteChrome) {
-    return children;
+    return (
+      <>
+        <VisitBeacon />
+        {children}
+      </>
+    );
   }
 
   return (
     <>
+      <VisitBeacon />
       <CursorFollower />
       <Header />
       <main className="flex-1 nm-main-offset">{children}</main>
